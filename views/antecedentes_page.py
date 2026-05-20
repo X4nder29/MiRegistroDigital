@@ -15,6 +15,8 @@ class AntecedentesPage(QWidget):
     cut_toggle_requested = Signal(int)
     clear_cuts_requested = Signal()
     export_requested     = Signal(dict)
+    export_single_pdf    = Signal(dict)
+    export_split_bookmark = Signal(dict)
     fullscreen_requested = Signal(int)
     page_deleted         = Signal(int)
     page_reordered       = Signal(int, int)
@@ -153,11 +155,24 @@ class AntecedentesPage(QWidget):
         folder_row.addWidget(btn_browse)
         el.addLayout(folder_row)
 
-        self._btn_export = QPushButton("  Generar ZIP")
+        self._btn_export = QPushButton("  Generar ZIP (puntos de corte)")
         self._btn_export.setProperty("primary", True)
         self._btn_export.setFixedHeight(34)
         self._btn_export.clicked.connect(self._do_export)
         el.addWidget(self._btn_export)
+
+        self._btn_export_single = QPushButton("  PDF único con marcadores")
+        self._btn_export_single.setFixedHeight(34)
+        self._btn_export_single.setToolTip("Un solo PDF con bookmarks por página")
+        self._btn_export_single.clicked.connect(self._do_export_single_pdf)
+        el.addWidget(self._btn_export_single)
+
+        self._btn_export_split = QPushButton("  Varios PDFs por marcador")
+        self._btn_export_split.setFixedHeight(34)
+        self._btn_export_split.setToolTip("Divide por marcadores, un PDF por grupo")
+        self._btn_export_split.clicked.connect(self._do_export_split_bookmark)
+        el.addWidget(self._btn_export_split)
+
         v.addWidget(exp_box)
 
         v.addStretch()
@@ -211,14 +226,35 @@ class AntecedentesPage(QWidget):
 
     def export_finished(self, path: str):
         self._btn_export.setEnabled(True)
-        self._btn_export.setText("  Generar ZIP")
-        QMessageBox.information(self, "Exportación completada",
-                                f"ZIP generado:\n{path}")
+        self._btn_export.setText("  Generar ZIP (puntos de corte)")
 
     def export_error(self, msg: str):
         self._btn_export.setEnabled(True)
-        self._btn_export.setText("  Generar ZIP")
-        QMessageBox.critical(self, "Error al exportar", msg)
+        self._btn_export.setText("  Generar ZIP (puntos de corte)")
+
+    def export_single_started(self):
+        self._btn_export_single.setEnabled(False)
+        self._btn_export_single.setText("Generando…")
+
+    def export_single_finished(self, path: str):
+        self._btn_export_single.setEnabled(True)
+        self._btn_export_single.setText("  PDF único con marcadores")
+
+    def export_single_error(self, msg: str):
+        self._btn_export_single.setEnabled(True)
+        self._btn_export_single.setText("  PDF único con marcadores")
+
+    def export_split_started(self):
+        self._btn_export_split.setEnabled(False)
+        self._btn_export_split.setText("Generando…")
+
+    def export_split_finished(self, path: str):
+        self._btn_export_split.setEnabled(True)
+        self._btn_export_split.setText("  Varios PDFs por marcador")
+
+    def export_split_error(self, msg: str):
+        self._btn_export_split.setEnabled(True)
+        self._btn_export_split.setText("  Varios PDFs por marcador")
 
     def clear(self):
         self.grid.clear_all()
@@ -259,3 +295,33 @@ class AntecedentesPage(QWidget):
             "hasta":      self._spin_hasta.value() if self._chk_range.isChecked() else 0,
         }
         self.export_requested.emit(params)
+
+    def _do_export_single_pdf(self):
+        folder = self._folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Carpeta requerida",
+                                "Selecciona una carpeta de destino.")
+            return
+        params = {
+            "folder":     folder,
+            "serial_ini": self._spin_serial.value(),
+            "padding":    self._spin_pad.value(),
+            "desde":      self._spin_desde.value() if self._chk_range.isChecked() else 0,
+            "hasta":      self._spin_hasta.value() if self._chk_range.isChecked() else 0,
+        }
+        self.export_single_pdf.emit(params)
+
+    def _do_export_split_bookmark(self):
+        folder = self._folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Carpeta requerida",
+                                "Selecciona una carpeta de destino.")
+            return
+        params = {
+            "folder":     folder,
+            "serial_ini": self._spin_serial.value(),
+            "padding":    self._spin_pad.value(),
+            "desde":      self._spin_desde.value() if self._chk_range.isChecked() else 0,
+            "hasta":      self._spin_hasta.value() if self._chk_range.isChecked() else 0,
+        }
+        self.export_split_bookmark.emit(params)

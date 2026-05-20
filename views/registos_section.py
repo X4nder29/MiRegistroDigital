@@ -46,6 +46,7 @@ class RegistosSection(QWidget):
     ocr_cancel_requested    = Signal()
     serial_corrected        = Signal(int, str)
     export_requested        = Signal(str)
+    export_bookmark_requested = Signal(str)
     ocr_area_saved          = Signal(int, float, float, float, float)
     parallel_workers_changed = Signal(int)
 
@@ -117,6 +118,7 @@ class RegistosSection(QWidget):
             cp.ocr_cancel_requested.disconnect(self.ocr_cancel_requested)
             cp.serial_corrected.disconnect(self.serial_corrected)
             cp.export_requested.disconnect(self.export_requested)
+            cp.export_bookmark_requested.disconnect(self.export_bookmark_requested)
             cp.ocr_area_saved.disconnect(self.ocr_area_saved)
             cp.parallel_workers_changed.disconnect(self.parallel_workers_changed)
         elif self._connected_idx == 1:
@@ -131,6 +133,7 @@ class RegistosSection(QWidget):
             cp.ocr_cancel_requested.connect(self.ocr_cancel_requested)
             cp.serial_corrected.connect(self.serial_corrected)
             cp.export_requested.connect(self.export_requested)
+            cp.export_bookmark_requested.connect(self.export_bookmark_requested)
             cp.ocr_area_saved.connect(self.ocr_area_saved)
             cp.parallel_workers_changed.connect(self.parallel_workers_changed)
         elif idx == 1:

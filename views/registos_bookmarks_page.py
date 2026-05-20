@@ -140,14 +140,11 @@ class RegistosBookmarksPage(QWidget):
         self._btn_export.setEnabled(True)
         self._btn_export.setText("  Generar PDF con marcadores")
         self._prog.setVisible(False)
-        QMessageBox.information(self, "Exportación completada",
-                                f"PDF generado:\n{path}")
 
     def export_error(self, msg: str):
         self._btn_export.setEnabled(True)
         self._btn_export.setText("  Generar PDF con marcadores")
         self._prog.setVisible(False)
-        QMessageBox.critical(self, "Error al exportar", msg)
 
     def show_progress(self, current: int, total: int):
         self._prog.setVisible(True)

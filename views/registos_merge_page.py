@@ -135,14 +135,11 @@ class RegistosMergePage(QWidget):
         self._btn_merge.setEnabled(True)
         self._btn_merge.setText("  Unir PDFs")
         self._prog.setVisible(False)
-        QMessageBox.information(self, "Unión completada",
-                                f"PDF unificado generado:\n{path}")
 
     def merge_error(self, msg: str):
         self._btn_merge.setEnabled(True)
         self._btn_merge.setText("  Unir PDFs")
         self._prog.setVisible(False)
-        QMessageBox.critical(self, "Error al unir", msg)
 
     def show_progress(self, current: int, total: int):
         self._prog.setVisible(True)

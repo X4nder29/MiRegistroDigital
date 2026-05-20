@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QStackedWidget, QFrame,
     QSizePolicy, QStyle, QApplication,
 )
-from PySide6.QtCore import Qt, Slot, QSize, QObject
+from PySide6.QtCore import Qt, Slot, QSize, QObject, QTimer
 from PySide6.QtGui import QFont, QIcon
 
 from models.scan_model import ScanModel
@@ -22,8 +22,8 @@ from views.registos_section import RegistosSection
 from views.antecedentes_page import AntecedentesPage
 from views.jobs_page import JobsPage
 from views.settings_page import SettingsPage
-from views.widgets import FullscreenViewer
-from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2
+from views.widgets import FullscreenViewer, ProcessListDialog
+from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2, INFO, SUCCESS, DANGER
 
 logger = logging.getLogger("docscan.main")
 
@@ -69,7 +69,7 @@ class NavButton(QPushButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DocScan Pro")
+        self.setWindowTitle("MiRegistroDigital")
         self.setMinimumSize(1080, 700)
         logger.info("MainWindow inicializando")
 
@@ -81,6 +81,9 @@ class MainWindow(QMainWindow):
         self._export = ExportController(self._model, self._cfg, self)
 
         self._pending_pages: list = []
+        self._fullscreen_viewer: FullscreenViewer | None = None
+        self._process_dialog: ProcessListDialog | None = None
+        self._custom_handlers: dict[str, tuple] = {}
 
         self._build_ui()
         self._connect()
@@ -91,11 +94,16 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
+        root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_sidebar())
+        middle = QWidget()
+        mid_layout = QHBoxLayout(middle)
+        mid_layout.setContentsMargins(0, 0, 0, 0)
+        mid_layout.setSpacing(0)
+
+        mid_layout.addWidget(self._build_sidebar())
 
         self._stack = QStackedWidget()
         self._imp_page    = ScanPage()
@@ -108,7 +116,58 @@ class MainWindow(QMainWindow):
                      self._jobs_page, self._sett_page):
             self._stack.addWidget(page)
 
-        root.addWidget(self._stack)
+        mid_layout.addWidget(self._stack)
+        root.addWidget(middle, 1)
+
+        self._bottom_bar = self._build_bottom_bar()
+        root.addWidget(self._bottom_bar)
+
+    def _build_bottom_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setFixedHeight(34)
+        bar.setStyleSheet(f"background:{SURFACE}; border-top: 1px solid {BORDER};")
+        hl = QHBoxLayout(bar)
+        hl.setContentsMargins(16, 0, 16, 0)
+        hl.setSpacing(8)
+
+        self._status_msg = QLabel("Listo")
+        self._status_msg.setStyleSheet(f"color:{TEXT_DIM}; font-size:9pt; border:none;")
+        hl.addWidget(self._status_msg, 1)
+
+        self._notif_label = QLabel()
+        self._notif_label.setVisible(False)
+        self._notif_label.setFixedHeight(26)
+        hl.addWidget(self._notif_label)
+
+        self._notif_timer = QTimer(self)
+        self._notif_timer.setSingleShot(True)
+        self._notif_timer.timeout.connect(self._hide_notification)
+
+        self._btn_processes = QPushButton("Procesos")
+        self._btn_processes.setFixedHeight(26)
+        self._btn_processes.setStyleSheet(
+            f"QPushButton {{ background: {SURFACE2}; border: 1px solid {BORDER}; "
+            f"border-radius: 4px; padding: 0 12px; font-size:9pt; color:{TEXT}; }}"
+            f"QPushButton:hover {{ background: {SURFACE3}; }}")
+        self._btn_processes.clicked.connect(self._open_process_dialog)
+        hl.addWidget(self._btn_processes)
+
+        return bar
+
+    def _open_process_dialog(self):
+        if self._safe_process_dialog() is None:
+            self._process_dialog = ProcessListDialog(self)
+            for j in self._export.all_jobs():
+                self._process_dialog.add_job(j.id, j.label, j.total)
+                if j.status == JobStatus.RUNNING:
+                    self._process_dialog.update_job(j.id, j.current, j.total)
+                elif j.status == JobStatus.DONE:
+                    self._process_dialog.set_job_done(j.id, j.output_path)
+                elif j.status == JobStatus.ERROR:
+                    self._process_dialog.set_job_error(j.id, j.error_msg)
+                elif j.status == JobStatus.CANCELLED:
+                    self._process_dialog.set_job_cancelled(j.id)
+            self._process_dialog.show()
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -119,7 +178,7 @@ class MainWindow(QMainWindow):
         v.setContentsMargins(0, 16, 0, 12)
         v.setSpacing(0)
 
-        logo = QLabel("  DocScan")
+        logo = QLabel("  MiRegistroDigital")
         logo.setAlignment(Qt.AlignLeft)
         logo.setFixedHeight(44)
         logo.setStyleSheet(f"font-size:14pt; font-weight:700; color:{TEXT}; border:none; padding: 0 14px; letter-spacing: -0.3px;")
@@ -191,6 +250,7 @@ class MainWindow(QMainWindow):
         cs.ocr_cancel_requested.connect(self._on_ocr_cancel)
         cs.serial_corrected.connect(self._ocr.override)
         cs.export_requested.connect(self._on_civil_export)
+        cs.export_bookmark_requested.connect(self._on_civil_export_bookmark)
         cs.ocr_area_saved.connect(self._on_area_saved)
         cs.parallel_workers_changed.connect(self._on_parallel_workers_changed)
 
@@ -216,6 +276,8 @@ class MainWindow(QMainWindow):
         ap.cut_toggle_requested.connect(self._on_cut_toggled)
         ap.clear_cuts_requested.connect(self._on_clear_cuts)
         ap.export_requested.connect(self._on_ant_export)
+        ap.export_single_pdf.connect(self._on_ant_export_single_pdf)
+        ap.export_split_bookmark.connect(self._on_ant_export_split_bookmark)
         ap.fullscreen_requested.connect(self._open_fullscreen)
         ap.page_deleted.connect(self._on_page_deleted)
         ap.page_reordered.connect(self._scan.reorder_page)
@@ -226,6 +288,11 @@ class MainWindow(QMainWindow):
         self._export.job_done.connect(self._on_job_done)
         self._export.job_error.connect(self._on_job_error)
         self._export.job_cancelled.connect(self._on_job_cancelled)
+        self._export.job_created.connect(self._on_process_created)
+        self._export.job_progress.connect(self._on_process_progress)
+        self._export.job_done.connect(self._on_process_done)
+        self._export.job_error.connect(self._on_process_error)
+        self._export.job_cancelled.connect(self._on_process_cancelled)
         logger.debug("Señales de ExportController conectadas")
 
         self._jobs_page.cancel_requested.connect(self._on_export_cancel)
@@ -374,9 +441,27 @@ class MainWindow(QMainWindow):
         if not job_id:
             self._civil_sect.civil_page.export_error("No hay páginas para exportar.")
 
+    @Slot(str)
+    def _on_civil_export_bookmark(self, folder: str):
+        logger.info("Exportación civil por marcador solicitada -> %s", folder)
+        cp = self._civil_sect.civil_page
+        cp.export_bookmark_started()
+        job_id = self._export.export_civil_bookmark(folder, "Registros por marcador")
+        if not job_id:
+            cp.export_bookmark_error("No hay páginas para exportar.")
+        else:
+            def done(jid: str, path: str):
+                cp.export_bookmark_finished(path)
+                self._custom_handlers.pop(jid, None)
+            def err(jid: str, msg: str):
+                cp.export_bookmark_error(msg)
+                self._custom_handlers.pop(jid, None)
+            self._custom_handlers[job_id] = (done, err)
+
     @Slot(list, str, int)
     def _on_bookmarks_export(self, pages_data: list, folder: str, dpi: int):
         logger.info("Exportación con marcadores solicitada -> %s", folder)
+        import cv2
         import fitz
         from PySide6.QtCore import QThreadPool, QRunnable
 
@@ -400,14 +485,9 @@ class MainWindow(QMainWindow):
                         self.s.progress.emit(i + 1, len(self.pages))
                         img = item["image"]
                         h, w = img.shape[:2]
-                        if img.ndim == 2:
-                            pix = fitz.Pixmap(fitz.csGRAY, fitz.IRect(0, 0, w, h), False)
-                            pix.samples = img.tobytes()
-                        else:
-                            pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, w, h), False)
-                            pix.samples = img[:, :, ::-1].tobytes()
+                        _, buf = cv2.imencode('.png', img)
                         page = doc.new_page(width=w, height=h)
-                        page.insert_image(page.rect, pixmap=pix)
+                        page.insert_image(page.rect, stream=buf.tobytes())
                     tocs = [[1, item["label"], i + 1] for i, item in enumerate(self.pages)]
                     doc.set_toc(tocs)
                     doc.save(self.out, garbage=4, deflate=True)
@@ -421,7 +501,9 @@ class MainWindow(QMainWindow):
         w = _Worker(pages_data, str(output), dpi)
         w.s.progress.connect(bp.show_progress)
         w.s.finished.connect(bp.export_finished)
+        w.s.finished.connect(lambda _: self._show_notification("PDF con marcadores generado"))
         w.s.error.connect(bp.export_error)
+        w.s.error.connect(lambda msg: self._show_notification(msg, success=False))
         QThreadPool.globalInstance().start(w)
 
     @staticmethod
@@ -478,7 +560,9 @@ class MainWindow(QMainWindow):
         w = _Worker(pdf_paths, out_path)
         w.s.progress.connect(mp.show_progress)
         w.s.finished.connect(mp.merge_finished)
+        w.s.finished.connect(lambda _: self._show_notification("PDFs unificados"))
         w.s.error.connect(mp.merge_error)
+        w.s.error.connect(lambda msg: self._show_notification(msg, success=False))
         QThreadPool.globalInstance().start(w)
 
     @Slot(dict)
@@ -495,6 +579,54 @@ class MainWindow(QMainWindow):
         )
         if not job_id:
             self._ant_page.export_error("No hay grupos de páginas para exportar.")
+
+    @Slot(dict)
+    def _on_ant_export_single_pdf(self, params: dict):
+        logger.info("Antecedentes PDF único solicitado -> %s", params.get("folder"))
+        ap = self._ant_page
+        ap.export_single_started()
+        job_id = self._export.export_ant_single_pdf(
+            params["folder"],
+            params["serial_ini"],
+            params["padding"],
+            params.get("desde", 0),
+            params.get("hasta", 0),
+            "Antecedentes PDF único",
+        )
+        if not job_id:
+            ap.export_single_error("No hay páginas para exportar.")
+        else:
+            def done(jid: str, path: str):
+                ap.export_single_finished(path)
+                self._custom_handlers.pop(jid, None)
+            def err(jid: str, msg: str):
+                ap.export_single_error(msg)
+                self._custom_handlers.pop(jid, None)
+            self._custom_handlers[job_id] = (done, err)
+
+    @Slot(dict)
+    def _on_ant_export_split_bookmark(self, params: dict):
+        logger.info("Antecedentes por marcador solicitado -> %s", params.get("folder"))
+        ap = self._ant_page
+        ap.export_split_started()
+        job_id = self._export.export_ant_split_bookmark(
+            params["folder"],
+            params["serial_ini"],
+            params["padding"],
+            params.get("desde", 0),
+            params.get("hasta", 0),
+            "Antecedentes por marcador",
+        )
+        if not job_id:
+            ap.export_split_error("No hay páginas con marcadores para dividir.")
+        else:
+            def done(jid: str, path: str):
+                ap.export_split_finished(path)
+                self._custom_handlers.pop(jid, None)
+            def err(jid: str, msg: str):
+                ap.export_split_error(msg)
+                self._custom_handlers.pop(jid, None)
+            self._custom_handlers[job_id] = (done, err)
 
     @Slot(object)
     def _on_job_created(self, job: Job):
@@ -513,15 +645,23 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _on_job_done(self, job_id: str, path: str):
         logger.info("Trabajo completado: %s -> %s", job_id, path)
-        for j in self._export.all_jobs():
-            if j.id == job_id:
-                self._jobs_page.update_job(j)
-                self.statusBar().showMessage(f"Exportado: {path}")
-                if j.job_type.value == "civil":
-                    self._civil_sect.civil_page.export_finished(path)
-                else:
-                    self._ant_page.export_finished(path)
-                break
+        if job_id in self._custom_handlers:
+            done, _ = self._custom_handlers[job_id]
+            done(job_id, path)
+            for j in self._export.all_jobs():
+                if j.id == job_id:
+                    self._jobs_page.update_job(j)
+                    break
+        else:
+            for j in self._export.all_jobs():
+                if j.id == job_id:
+                    self._jobs_page.update_job(j)
+                    if j.job_type.value == "civil":
+                        self._civil_sect.civil_page.export_finished(path)
+                    else:
+                        self._ant_page.export_finished(path)
+                    break
+        self._show_notification("Exportación completada")
 
     @Slot(str, str)
     def _on_error(self, msg: str):
@@ -531,15 +671,23 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _on_job_error(self, job_id: str, msg: str):
         logger.error("Error en trabajo %s: %s", job_id, msg)
-        for j in self._export.all_jobs():
-            if j.id == job_id:
-                self._jobs_page.update_job(j)
-                self.statusBar().showMessage(f"Error: {msg}")
-                if j.job_type.value == "civil":
-                    self._civil_sect.civil_page.export_error(msg)
-                else:
-                    self._ant_page.export_error(msg)
-                break
+        if job_id in self._custom_handlers:
+            _, err = self._custom_handlers[job_id]
+            err(job_id, msg)
+            for j in self._export.all_jobs():
+                if j.id == job_id:
+                    self._jobs_page.update_job(j)
+                    break
+        else:
+            for j in self._export.all_jobs():
+                if j.id == job_id:
+                    self._jobs_page.update_job(j)
+                    if j.job_type.value == "civil":
+                        self._civil_sect.civil_page.export_error(msg)
+                    else:
+                        self._ant_page.export_error(msg)
+                    break
+        self._show_notification(msg, success=False)
 
     @Slot(int)
     def _on_correction_done(self, index: int):
@@ -554,11 +702,92 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_job_cancelled(self, job_id: str):
         logger.info("Trabajo cancelado: %s", job_id)
+        self._custom_handlers.pop(job_id, None)
         for j in self._export.all_jobs():
             if j.id == job_id:
                 self._jobs_page.update_job(j)
-                self.statusBar().showMessage("Exportación cancelada")
                 break
+        self._show_notification("Exportación cancelada", success=False)
+
+    # ── Non-blocking notification ──────────────────────────────
+
+    def _show_notification(self, text: str, success: bool = True):
+        color = SUCCESS if success else DANGER
+        self._notif_label.setText(text)
+        self._notif_label.setStyleSheet(
+            f"QLabel {{ background: {SURFACE2}; border: 1px solid {color}; "
+            f"border-radius: 4px; padding: 0 10px; font-size:8pt; color:{color}; }}"
+        )
+        self._notif_label.setVisible(True)
+        self._notif_timer.start(4000)
+
+    def _hide_notification(self):
+        self._notif_label.setVisible(False)
+
+    # ── Process dialog updates ─────────────────────────────────
+
+    def _safe_process_dialog(self) -> ProcessListDialog | None:
+        if self._process_dialog is None:
+            return None
+        try:
+            if self._process_dialog.isVisible():
+                return self._process_dialog
+        except RuntimeError:
+            self._process_dialog = None
+        return None
+
+    @Slot(object)
+    def _on_process_created(self, job):
+        dlg = self._safe_process_dialog()
+        if dlg:
+            dlg.add_job(job.id, job.label, job.total)
+        self._update_process_btn()
+
+    @Slot(str, int, int)
+    def _on_process_progress(self, job_id: str, cur: int, tot: int):
+        dlg = self._safe_process_dialog()
+        if dlg:
+            dlg.update_job(job_id, cur, tot)
+
+    @Slot(str, str)
+    def _on_process_done(self, job_id: str, path: str):
+        dlg = self._safe_process_dialog()
+        if dlg:
+            dlg.set_job_done(job_id, path)
+        self._update_process_btn()
+        self._show_notification("Proceso completado")
+
+    @Slot(str, str)
+    def _on_process_error(self, job_id: str, msg: str):
+        dlg = self._safe_process_dialog()
+        if dlg:
+            dlg.set_job_error(job_id, msg)
+        self._update_process_btn()
+        self._show_notification(msg, success=False)
+
+    @Slot(str)
+    def _on_process_cancelled(self, job_id: str):
+        dlg = self._safe_process_dialog()
+        if dlg:
+            dlg.set_job_cancelled(job_id)
+        self._update_process_btn()
+        self._show_notification("Proceso cancelado", success=False)
+
+    def _update_process_btn(self):
+        active = sum(1 for j in self._export.all_jobs()
+                     if j.status == JobStatus.RUNNING or j.status == JobStatus.QUEUED)
+        if active:
+            self._btn_processes.setText(f"Procesos ({active})")
+            self._btn_processes.setStyleSheet(
+                f"QPushButton {{ background: {SURFACE2}; border: 1px solid {INFO}; "
+                f"border-radius: 4px; padding: 0 12px; font-size:9pt; color:{INFO}; }}"
+                f"QPushButton:hover {{ background: {SURFACE3}; }}")
+        else:
+            self._btn_processes.setText("Procesos")
+            self._btn_processes.setStyleSheet(
+                f"QPushButton {{ background: {SURFACE2}; border: 1px solid {BORDER}; "
+                f"border-radius: 4px; padding: 0 12px; font-size:9pt; color:{TEXT}; }}"
+                f"QPushButton:hover {{ background: {SURFACE3}; }}")
 
     @Slot(str)
     def _on_export_cancel(self, job_id: str):
@@ -571,9 +800,9 @@ class MainWindow(QMainWindow):
         pages = self._model.pages
         if not pages:
             return
-        dlg = FullscreenViewer(pages, start=index, parent=self)
-        dlg.bookmark_changed.connect(self._scan.set_bookmark)
-        dlg.show()
+        self._fullscreen_viewer = FullscreenViewer(pages, start=index, parent=self)
+        self._fullscreen_viewer.bookmark_changed.connect(self._scan.set_bookmark)
+        self._fullscreen_viewer.show()
 
     def closeEvent(self, event):
         self._cfg.save()

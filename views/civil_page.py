@@ -21,6 +21,7 @@ class CivilPage(QWidget):
     ocr_cancel_requested     = Signal()
     serial_corrected         = Signal(int, str)
     export_requested         = Signal(str)
+    export_bookmark_requested = Signal(str)
     ocr_area_saved           = Signal(int, float, float, float, float)
     parallel_workers_changed = Signal(int)
     page_reordered           = Signal(int, int)
@@ -132,6 +133,11 @@ class CivilPage(QWidget):
         self._btn_export.setFixedHeight(34)
         self._btn_export.clicked.connect(self._do_export)
 
+        self._btn_export_bm = QPushButton("  Exportar por marcador")
+        self._btn_export_bm.setFixedHeight(34)
+        self._btn_export_bm.setToolTip("Un PDF por página con el marcador como nombre")
+        self._btn_export_bm.clicked.connect(self._do_export_bookmark)
+
         btn_ocr_sel = QPushButton("  OCR página")
         btn_ocr_sel.setFixedHeight(32)
         btn_ocr_sel.clicked.connect(self._ocr_selected)
@@ -144,6 +150,7 @@ class CivilPage(QWidget):
         bl.addWidget(self._folder_edit)
         bl.addWidget(btn_browse)
         bl.addWidget(self._btn_export)
+        bl.addWidget(self._btn_export_bm)
         lv.addWidget(bottom)
 
         splitter.addWidget(left)
@@ -369,13 +376,22 @@ class CivilPage(QWidget):
     def export_finished(self, path: str):
         self._btn_export.setEnabled(True)
         self._btn_export.setText("  Generar ZIP")
-        QMessageBox.information(self, "Exportación completada",
-                                f"ZIP generado:\n{path}")
 
     def export_error(self, msg: str):
         self._btn_export.setEnabled(True)
         self._btn_export.setText("  Generar ZIP")
-        QMessageBox.critical(self, "Error al exportar", msg)
+
+    def export_bookmark_started(self):
+        self._btn_export_bm.setEnabled(False)
+        self._btn_export_bm.setText("Generando…")
+
+    def export_bookmark_finished(self, path: str):
+        self._btn_export_bm.setEnabled(True)
+        self._btn_export_bm.setText("  Exportar por marcador")
+
+    def export_bookmark_error(self, msg: str):
+        self._btn_export_bm.setEnabled(True)
+        self._btn_export_bm.setText("  Exportar por marcador")
 
     def remove_page(self, index: int):
         row = self._row_for(index)
@@ -544,6 +560,14 @@ class CivilPage(QWidget):
                                 "Selecciona una carpeta de destino.")
             return
         self.export_requested.emit(folder)
+
+    def _do_export_bookmark(self):
+        folder = self._folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Carpeta requerida",
+                                "Selecciona una carpeta de destino.")
+            return
+        self.export_bookmark_requested.emit(folder)
 
     def _row_for(self, page_index: int) -> int:
         for r in range(self._table.rowCount()):
