@@ -9,12 +9,12 @@ DEFAULTS: dict[str, Any] = {
     "correction":   {"auto_perspective": True, "auto_rotation": True},
     "ocr":          {"languages": ["es", "en"], "margin_right_pct": 0.15,
                      "confidence_threshold": 0.4, "gpu": False},
-    "output":       {"default_folder": str(Path.home() / "Documentos" / "DocScanPro"),
+    "output":       {"default_folder": str(Path.home() / "Documentos" / "MiRegistroDigital"),
                      "pdf_dpi": 200},
     "antecedentes": {"serial_inicial": 1, "serial_padding": 5},
     "ui":           {"last_page": "scan"},
 }
-CONFIG_PATH = Path.home() / ".docscanpro" / "config.json"
+CONFIG_PATH = Path.home() / ".miregistrodigital" / "config.json"
 
 
 class ConfigModel:

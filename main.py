@@ -1,4 +1,4 @@
-"""DocScan Pro — Punto de entrada."""
+"""MiRegistroDigital — Punto de entrada."""
 import logging
 import sys
 import traceback
@@ -44,13 +44,13 @@ def main():
     qInstallMessageHandler(qt_message_handler)
     logger = logging.getLogger("docscan")
     logger.info("=" * 60)
-    logger.info("DocScan Pro iniciando")
+    logger.info("MiRegistroDigital iniciando")
     logger.info("=" * 60)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("DocScan Pro")
+    app.setApplicationName("MiRegistroDigital")
     app.setApplicationVersion("1.0.0")
-    app.setOrganizationName("DocScan")
+    app.setOrganizationName("MiRegistroDigital")
 
     # ── Cargar fuente ──────────────────────────────────────────────
     if getattr(sys, "frozen", False):
