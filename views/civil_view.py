@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
+from views.theme import SUCCESS as _OK, WARNING as _WARN, DANGER as _ERR, INFO as _INFO
 
 
 class CivilView(QWidget):
@@ -159,7 +160,7 @@ class CivilView(QWidget):
         estado_item = QTableWidgetItem("Pendiente OCR")
         estado_item.setTextAlignment(Qt.AlignCenter)
         estado_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        estado_item.setForeground(QColor("#ff9800"))
+        estado_item.setForeground(QColor(_WARN))
 
         self.table.setItem(row, self.COL_NUM, num_item)
         self.table.setItem(row, self.COL_SERIAL, serial_item)
@@ -186,14 +187,14 @@ class CivilView(QWidget):
 
         estado_item = self.table.item(row, self.COL_ESTADO)
         if serial:
-            color = "#4caf50" if confidence >= 0.7 else "#ff9800"
+            color = _OK if confidence >= 0.7 else _WARN
             estado_item.setText("OK" if confidence >= 0.7 else "Baja confianza")
             estado_item.setForeground(QColor(color))
             self.table.item(row, self.COL_SERIAL).setForeground(QColor(color))
         else:
             estado_item.setText("Sin serial")
-            estado_item.setForeground(QColor("#f44336"))
-            self.table.item(row, self.COL_SERIAL).setForeground(QColor("#f44336"))
+            estado_item.setForeground(QColor(_ERR))
+            self.table.item(row, self.COL_SERIAL).setForeground(QColor(_ERR))
 
         self._block_signals(False)
         self._refresh_summary()
@@ -203,7 +204,7 @@ class CivilView(QWidget):
         if row < 0:
             return
         self.table.item(row, self.COL_ESTADO).setText("Error OCR")
-        self.table.item(row, self.COL_ESTADO).setForeground(QColor("#f44336"))
+        self.table.item(row, self.COL_ESTADO).setForeground(QColor(_ERR))
         self.table.item(row, self.COL_SERIAL).setText("—")
         self._refresh_summary()
 
@@ -266,7 +267,7 @@ class CivilView(QWidget):
         estado = self.table.item(row, self.COL_ESTADO)
         if estado:
             estado.setText("Corregido manualmente")
-            estado.setForeground(QColor("#2196f3"))
+            estado.setForeground(QColor(_INFO))
         self.serial_corrected.emit(page_index, serial)
         self._refresh_summary()
 

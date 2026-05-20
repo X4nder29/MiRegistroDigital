@@ -1,23 +1,24 @@
-"""Paleta oscura clara — más luminosa, moderna, equilibrada."""
+"""Paleta oscura estilo Vercel/GitHub — minimal, limpia, moderna."""
 from PySide6.QtGui import QColor, QPalette, QFont
 from PySide6.QtWidgets import QApplication
 
 
-BG        = "#141418"
-SURFACE   = "#1c1c22"
-SURFACE2  = "#24242b"
-SURFACE3  = "#2e2e36"
-TEXT      = "#e8e8ee"
-TEXT_SEC  = "#94949e"
-TEXT_DIM  = "#5c5c68"
-ACCENT    = "#c8c8d0"
+BG        = "#0a0a0b"
+SURFACE   = "#111113"
+SURFACE2  = "#18181b"
+SURFACE3  = "#202023"
+BORDER    = "#27272a"
+TEXT      = "#ededef"
+TEXT_SEC  = "#a1a1aa"
+TEXT_DIM  = "#71717a"
+ACCENT    = "#e8e8ee"
 ACCENT2   = "#8888ff"
-SUCCESS   = "#56c98e"
-WARNING   = "#e8b04c"
-DANGER    = "#e85858"
-INFO      = "#689cf8"
+SUCCESS   = "#22c55e"
+WARNING   = "#f59e0b"
+DANGER    = "#ef4444"
+INFO      = "#3b82f6"
 
-FONT_FAMILY = "'JetBrainsMono NF', 'Segoe UI'"
+FONT_FAMILY = "'Segoe UI', 'Inter', -apple-system, sans-serif"
 
 
 def apply_palette(app: QApplication):
@@ -53,49 +54,59 @@ QLabel {{
 }}
 
 QPushButton {{
-    background-color: {SURFACE2};
+    background-color: transparent;
     color: {TEXT_SEC};
-    border: none;
+    border: 1px solid {BORDER};
     border-radius: 6px;
-    padding: 7px 18px;
+    padding: 6px 16px;
     min-height: 28px;
 }}
 QPushButton:hover {{
-    background-color: {SURFACE3};
+    background-color: {SURFACE};
+    border-color: {SURFACE3};
     color: {TEXT};
 }}
 QPushButton:pressed {{
-    background-color: {BG};
+    background-color: {SURFACE2};
 }}
 QPushButton:disabled {{
     color: {TEXT_DIM};
+    border-color: transparent;
 }}
 
 QPushButton[primary="true"] {{
     background-color: {SURFACE3};
     color: {TEXT};
+    border: 1px solid {BORDER};
 }}
 QPushButton[primary="true"]:hover {{
-    background-color: #383840;
+    background-color: #2a2a2e;
+    border-color: #3a3a3e;
 }}
 
 QLineEdit, QTextEdit, QPlainTextEdit {{
     background-color: {SURFACE2};
     color: {TEXT};
-    border: none;
+    border: 1px solid {BORDER};
     border-radius: 6px;
     padding: 6px 10px;
     selection-background-color: {SURFACE3};
+}}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+    border-color: {INFO};
 }}
 
 QSpinBox, QDoubleSpinBox, QComboBox {{
     background-color: {SURFACE2};
     color: {TEXT};
-    border: none;
+    border: 1px solid {BORDER};
     border-radius: 6px;
     padding: 4px 8px;
     min-height: 26px;
     selection-background-color: {SURFACE3};
+}}
+QSpinBox:focus, QComboBox:focus {{
+    border-color: {INFO};
 }}
 QComboBox::drop-down {{
     border: none;
@@ -103,8 +114,8 @@ QComboBox::drop-down {{
 }}
 QComboBox QAbstractItemView {{
     background-color: {SURFACE};
-    border: none;
-    border-radius: 4px;
+    border: 1px solid {BORDER};
+    border-radius: 6px;
     selection-background-color: {SURFACE3};
     color: {TEXT};
     padding: 4px;
@@ -119,23 +130,40 @@ QComboBox QAbstractItemView::item:selected {{
 
 QScrollBar:vertical {{
     background: transparent;
-    width: 4px;
+    width: 8px;
+    margin: 2px 0;
 }}
 QScrollBar::handle:vertical {{
-    background: {SURFACE3};
-    border-radius: 2px;
-    min-height: 24px;
+    background: {BORDER};
+    border-radius: 4px;
+    min-height: 30px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: #3f3f46;
+}}
+QScrollBar::handle:vertical:pressed {{
+    background: #52525b;
 }}
 QScrollBar:horizontal {{
     background: transparent;
-    height: 4px;
+    height: 8px;
+    margin: 0 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {SURFACE3};
-    border-radius: 2px;
-    min-width: 24px;
+    background: {BORDER};
+    border-radius: 4px;
+    min-width: 30px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: #3f3f46;
+}}
+QScrollBar::handle:horizontal:pressed {{
+    background: #52525b;
 }}
 QScrollBar::add-line, QScrollBar::sub-line {{
+    background: none;
+}}
+QScrollBar::add-page, QScrollBar::sub-page {{
     background: none;
 }}
 
@@ -143,25 +171,26 @@ QTableWidget {{
     background-color: transparent;
     alternate-background-color: {SURFACE};
     gridline-color: transparent;
-    border: none;
+    border: 1px solid {BORDER};
+    border-radius: 6px;
     color: {TEXT};
     selection-background-color: {SURFACE3};
 }}
 QTableWidget::item {{
-    padding: 5px 10px;
+    padding: 6px 12px;
     border-radius: 4px;
 }}
 QHeaderView::section {{
     background-color: transparent;
     color: {TEXT_SEC};
     border: none;
-    border-bottom: 1px solid {SURFACE3};
-    padding: 7px 10px;
+    border-bottom: 1px solid {BORDER};
+    padding: 8px 12px;
     font-size: 9pt;
 }}
 
 QGroupBox {{
-    border: none;
+    border: 1px solid {BORDER};
     border-radius: 8px;
     background-color: {SURFACE};
     margin-top: 12px;
@@ -195,10 +224,15 @@ QCheckBox::indicator {{
     width: 16px;
     height: 16px;
     border-radius: 4px;
+    border: 1px solid {BORDER};
     background: {SURFACE2};
 }}
+QCheckBox::indicator:hover {{
+    border-color: {SURFACE3};
+}}
 QCheckBox::indicator:checked {{
-    background: {SURFACE3};
+    background: {ACCENT2};
+    border-color: {ACCENT2};
 }}
 
 QSlider::groove:horizontal {{
@@ -219,7 +253,7 @@ QSlider::sub-page:horizontal {{
 }}
 
 QSplitter::handle {{
-    background: {SURFACE3};
+    background: {BORDER};
 }}
 QSplitter::handle:horizontal {{
     width: 1px;
@@ -229,16 +263,16 @@ QSplitter::handle:vertical {{
 }}
 
 QStatusBar {{
-    background: {SURFACE};
-    color: {TEXT_SEC};
+    background: transparent;
+    color: {TEXT_DIM};
     border: none;
-    font-size: 9pt;
+    font-size: 8pt;
 }}
 
 QToolTip {{
     background: {SURFACE2};
     color: {TEXT};
-    border: none;
+    border: 1px solid {BORDER};
     padding: 6px 10px;
     border-radius: 4px;
 }}
@@ -249,7 +283,7 @@ QMessageBox {{
 
 QMenu {{
     background-color: {SURFACE};
-    border: none;
+    border: 1px solid {BORDER};
     border-radius: 6px;
     padding: 4px;
 }}
@@ -262,7 +296,7 @@ QMenu::item:selected {{
     color: {TEXT};
 }}
 QMenu::separator {{
-    background: {SURFACE3};
+    background: {BORDER};
     height: 1px;
     margin: 4px 8px;
 }}

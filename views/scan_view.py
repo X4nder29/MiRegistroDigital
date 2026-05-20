@@ -14,6 +14,7 @@ from PySide6.QtGui import QPixmap
 
 from utils.image_utils import numpy_to_qimage
 from views.thumbnail_strip import ThumbnailStrip
+from views.theme import TEXT_DIM
 
 
 # Extensiones reconocidas (para el filtro del diálogo)
@@ -33,7 +34,7 @@ class ImageViewer(QLabel):
         self.setMinimumSize(400, 500)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setText("Escanea o carga archivos para comenzar")
-        self.setStyleSheet("color: #666; font-size: 14px;")
+        self.setStyleSheet(f"color: {TEXT_DIM}; font-size: 14px;")
         self._pixmap: QPixmap | None = None
 
     def set_image(self, image: np.ndarray):

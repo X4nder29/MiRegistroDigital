@@ -10,7 +10,7 @@ from PySide6.QtCore import Signal
 from views.civil_page import CivilPage
 from views.registos_bookmarks_page import RegistosBookmarksPage
 from views.registos_merge_page import RegistosMergePage
-from views.theme import BG, SURFACE, SURFACE3, TEXT, TEXT_DIM, TEXT_SEC
+from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2
 
 
 class SubNavButton(QPushButton):
@@ -18,21 +18,22 @@ class SubNavButton(QPushButton):
         super().__init__(parent)
         self.setText(label)
         self.setCheckable(True)
-        self.setFixedHeight(32)
+        self.setFixedHeight(34)
         self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 border: none;
-                border-radius: 6px;
+                border-bottom: 2px solid transparent;
+                border-radius: 0;
                 color: {TEXT_DIM};
                 text-align: center;
-                padding: 0 16px;
-                font-size: 9pt;
+                padding: 0 20px;
+                font-size: 9.5pt;
             }}
-            QPushButton:hover {{ background: {SURFACE}; color: {TEXT_SEC}; }}
+            QPushButton:hover {{ background: transparent; color: {TEXT_SEC}; }}
             QPushButton:checked {{
-                background: {SURFACE3};
+                border-bottom: 2px solid {TEXT};
                 color: {TEXT};
             }}
         """)
@@ -65,8 +66,8 @@ class RegistosSection(QWidget):
         root.setSpacing(0)
 
         subnav = QFrame()
-        subnav.setFixedHeight(40)
-        subnav.setStyleSheet(f"background:{BG}; border:none;")
+        subnav.setFixedHeight(42)
+        subnav.setStyleSheet(f"background:{BG}; border-bottom: 1px solid {BORDER};")
         nav_layout = QHBoxLayout(subnav)
         nav_layout.setContentsMargins(24, 0, 24, 0)
         nav_layout.setSpacing(4)

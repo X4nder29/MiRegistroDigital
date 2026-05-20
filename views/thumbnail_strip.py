@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QPixmap, QImage, QColor, QPainter, QFont
 
 from utils.image_utils import numpy_to_qimage
+from views.theme import SURFACE, SURFACE2, BORDER, SUCCESS, WARNING, DANGER, INFO, TEXT_DIM
 
 
 class ThumbnailItem(QFrame):
@@ -76,12 +77,12 @@ class ThumbnailItem(QFrame):
 
     def set_serial(self, serial: str, confidence: float = 0.0):
         if serial:
-            color = "#4caf50" if confidence >= 0.7 else "#ff9800"
+            color = SUCCESS if confidence >= 0.7 else WARNING
             self._ocr_label.setText(serial)
             self._ocr_label.setStyleSheet(f"color: {color};")
         else:
             self._ocr_label.setText("Sin serial")
-            self._ocr_label.setStyleSheet("color: #f44336;")
+            self._ocr_label.setStyleSheet(f"color: {DANGER};")
 
     def set_selected(self, selected: bool):
         self._selected = selected
@@ -109,9 +110,9 @@ class ThumbnailItem(QFrame):
             self.delete_requested.emit(self.page_index)
 
     def _update_style(self):
-        border_color = "#2196f3" if self._selected else ("#ff5722" if self._is_cut else "transparent")
+        border_color = INFO if self._selected else (WARNING if self._is_cut else BORDER)
         border_width = 2 if (self._selected or self._is_cut) else 1
-        bg = "#1a2a3a" if self._selected else ("#2a1a0a" if self._is_cut else "#1e1e1e")
+        bg = SURFACE2 if self._selected else (SURFACE if self._is_cut else SURFACE)
         self.setStyleSheet(f"""
             ThumbnailItem {{
                 border: {border_width}px solid {border_color};
