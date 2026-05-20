@@ -1,6 +1,9 @@
 """ImportController — importación de archivos + corrección en hilos."""
 from __future__ import annotations
+import concurrent.futures
 import logging
+import os
+import threading
 from pathlib import Path
 from typing import Optional
 import numpy as np
@@ -30,6 +33,28 @@ class _ImportWorker(QRunnable):
     def cancel(self):
         self._stop = True
 
+    @staticmethod
+    def _render_single_page(path: str, pdf_dpi: int, pg: int) -> Optional[np.ndarray]:
+        try:
+            import fitz
+            doc = fitz.open(path)
+            try:
+                mat = fitz.Matrix(pdf_dpi / 72, pdf_dpi / 72)
+                pix = doc[pg].get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                img = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)
+                return img[:, :, ::-1]
+            finally:
+                doc.close()
+        except ImportError:
+            pass
+        try:
+            from pdf2image import convert_from_path
+            imgs = convert_from_path(path, dpi=pdf_dpi,
+                                     first_page=pg + 1, last_page=pg + 1)
+            return np.array(imgs[0].convert("RGB"))[:, :, ::-1] if imgs else None
+        except ImportError:
+            raise RuntimeError("Instala pymupdf o pdf2image para importar PDFs.")
+
     def run(self):
         try:
             tasks: list[tuple[Path, Optional[int]]] = []
@@ -42,16 +67,55 @@ class _ImportWorker(QRunnable):
                         tasks.append((p, i))
 
             total = len(tasks)
-            for n, (path, pg) in enumerate(tasks):
+            if total == 0:
+                self.s.done.emit()
+                return
+
+            buffer: dict[int, np.ndarray] = {}
+            next_expected = 0
+            lock = threading.Lock()
+
+            def try_emit():
+                nonlocal next_expected
+                while next_expected in buffer:
+                    img = buffer.pop(next_expected)
+                    self.s.page.emit(img, str(tasks[next_expected][0]))
+                    self.s.progress.emit(next_expected + 1, total)
+                    next_expected += 1
+
+            for i, (path, pg) in enumerate(tasks):
                 if self._stop:
                     break
-                try:
-                    img = self._load_pdf(path, pg) if pg is not None else self._load_img(path)
-                    if img is not None:
-                        self.s.progress.emit(n + 1, total)
-                        self.s.page.emit(img, str(path))
-                except Exception as e:
-                    self.s.error.emit(f"{path.name}: {e}")
+                if pg is None:
+                    try:
+                        img = self._load_img(path)
+                        if img is not None:
+                            with lock:
+                                buffer[i] = img
+                                try_emit()
+                    except Exception as e:
+                        self.s.error.emit(f"{path.name}: {e}")
+
+            pdf_tasks = [(i, str(path), pg) for i, (path, pg) in enumerate(tasks)
+                         if pg is not None and not self._stop]
+            if pdf_tasks:
+                max_workers = min(4, os.cpu_count() or 4)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    def render(task_idx: int, path: str, pg: int):
+                        if self._stop:
+                            return
+                        try:
+                            img = self._render_single_page(path, self.pdf_dpi, pg)
+                            if img is not None:
+                                with lock:
+                                    if not self._stop:
+                                        buffer[task_idx] = img
+                                        try_emit()
+                        except Exception as e:
+                            self.s.error.emit(f"{Path(path).name} p.{pg + 1}: {e}")
+
+                    futures = [pool.submit(render, idx, p, pg) for idx, p, pg in pdf_tasks]
+                    concurrent.futures.wait(futures)
         except Exception as e:
             self.s.error.emit(str(e))
         finally:
@@ -64,25 +128,6 @@ class _ImportWorker(QRunnable):
             from PIL import Image
             img = np.array(Image.open(path).convert("RGB"))[:, :, ::-1]
         return img
-
-    def _load_pdf(self, path: Path, pg: int) -> Optional[np.ndarray]:
-        try:
-            import fitz
-            doc = fitz.open(str(path))
-            mat = fitz.Matrix(self.pdf_dpi / 72, self.pdf_dpi / 72)
-            pix = doc[pg].get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-            img = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)
-            doc.close()
-            return img[:, :, ::-1]
-        except ImportError:
-            pass
-        try:
-            from pdf2image import convert_from_path
-            imgs = convert_from_path(str(path), dpi=self.pdf_dpi,
-                                     first_page=pg + 1, last_page=pg + 1)
-            return np.array(imgs[0].convert("RGB"))[:, :, ::-1] if imgs else None
-        except ImportError:
-            raise RuntimeError("Instala pymupdf o pdf2image para importar PDFs.")
 
     def _pdf_count(self, path: Path) -> int:
         try:
