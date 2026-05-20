@@ -17,6 +17,8 @@ class AntecedentesPage(QWidget):
     export_requested     = Signal(dict)
     fullscreen_requested = Signal(int)
     page_deleted         = Signal(int)
+    page_reordered       = Signal(int, int)
+    bookmark_set         = Signal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,6 +64,8 @@ class AntecedentesPage(QWidget):
         self.grid.cut_toggled.connect(self.cut_toggle_requested)
         self.grid.page_deleted.connect(self.page_deleted)
         self.grid.fullscreen_requested.connect(self.fullscreen_requested)
+        self.grid.reorder_requested.connect(self.page_reordered)
+        self.grid.bookmark_requested.connect(self.bookmark_set)
         self._splitter.addWidget(self.grid)
 
         self._right_panel = self._build_right_panel()
@@ -168,6 +172,25 @@ class AntecedentesPage(QWidget):
 
     def set_cut(self, index: int, is_cut: bool):
         self.grid.set_cut(index, is_cut)
+
+    def set_bookmark(self, index: int, label: str):
+        self.grid.set_bookmark(index, label)
+
+    def reorder_cards(self, from_idx: int, to_idx: int):
+        self.grid.reorder_cards(from_idx, to_idx)
+
+    def rebuild(self, pages_data: list):
+        self.grid.blockSignals(True)
+        self.grid.clear_all()
+        for pd in pages_data:
+            c = self.grid.add_page(pd.index, pd.display_image)
+            if pd.serial:
+                c.set_serial(pd.serial, pd.serial_confidence)
+            if pd.is_cut_point:
+                c.set_cut_point(True)
+            if pd.bookmark:
+                c.set_bookmark(pd.bookmark)
+        self.grid.blockSignals(False)
 
     def remove_page(self, index: int):
         self.grid.remove_page(index)

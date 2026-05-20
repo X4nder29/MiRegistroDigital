@@ -23,7 +23,7 @@ from views.antecedentes_page import AntecedentesPage
 from views.jobs_page import JobsPage
 from views.settings_page import SettingsPage
 from views.widgets import FullscreenViewer
-from views.theme import BG, SURFACE, SURFACE3, TEXT, TEXT_DIM, TEXT_SEC
+from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2
 
 logger = logging.getLogger("docscan.main")
 
@@ -45,21 +45,22 @@ class NavButton(QPushButton):
             self.setIcon(icon)
             self.setIconSize(QSize(16, 16))
         self.setCheckable(True)
-        self.setFixedHeight(40)
+        self.setFixedHeight(38)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 border: none;
-                border-radius: 6px;
+                border-left: 2px solid transparent;
+                border-radius: 0;
                 color: {TEXT_DIM};
                 text-align: left;
                 padding: 0 14px;
                 font-size: 10pt;
             }}
-            QPushButton:hover {{ background: {SURFACE}; color: {TEXT_SEC}; }}
+            QPushButton:hover {{ background: transparent; color: {TEXT_SEC}; }}
             QPushButton:checked {{
-                background: {SURFACE3};
+                border-left: 2px solid {ACCENT2};
                 color: {TEXT};
             }}
         """)
@@ -78,6 +79,8 @@ class MainWindow(QMainWindow):
         self._scan   = ScanController(self._model, self._cfg, self)
         self._ocr    = OCRController(self._model, self._cfg, self)
         self._export = ExportController(self._model, self._cfg, self)
+
+        self._pending_pages: list = []
 
         self._build_ui()
         self._connect()
@@ -109,19 +112,19 @@ class MainWindow(QMainWindow):
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
-        sidebar.setMinimumWidth(140)
+        sidebar.setMinimumWidth(160)
         sidebar.setMaximumWidth(220)
-        sidebar.setStyleSheet(f"background:{BG}; border:none;")
+        sidebar.setStyleSheet(f"background:{BG}; border-right: 1px solid {BORDER};")
         v = QVBoxLayout(sidebar)
-        v.setContentsMargins(10, 16, 10, 12)
-        v.setSpacing(2)
+        v.setContentsMargins(0, 16, 0, 12)
+        v.setSpacing(0)
 
-        logo = QLabel("DocScan")
+        logo = QLabel("  DocScan")
         logo.setAlignment(Qt.AlignLeft)
-        logo.setFixedHeight(40)
-        logo.setStyleSheet(f"font-size:13pt; font-weight:bold; color:{TEXT}; border:none; padding: 0 4px;")
+        logo.setFixedHeight(44)
+        logo.setStyleSheet(f"font-size:14pt; font-weight:700; color:{TEXT}; border:none; padding: 0 14px; letter-spacing: -0.3px;")
         v.addWidget(logo)
-        v.addSpacing(12)
+        v.addSpacing(16)
 
         style = QApplication.style()
         icon_map = {
@@ -166,8 +169,14 @@ class MainWindow(QMainWindow):
         ip.rotation_changed.connect(self._scan.rotate_manual)
         ip.reset_correction.connect(self._scan.reset_correction)
 
-        self._scan.page_added.connect(self._on_page_added)
-        self._scan.import_done.connect(lambda: ip.import_busy(False))
+        ip.page_reordered.connect(self._scan.reorder_page)
+        ip.bookmark_set.connect(self._scan.set_bookmark)
+
+        self._scan.order_changed.connect(self._on_order_changed)
+        self._scan.bookmark_updated.connect(self._on_bookmark_updated)
+
+        self._scan.page_added.connect(self._on_page_queued)
+        self._scan.import_done.connect(self._flush_pending_pages)
         self._scan.import_done.connect(lambda: self.statusBar().showMessage(
             f"Importación completa — {self._model.count} página(s)"))
         self._scan.import_progress.connect(ip.show_import_progress)
@@ -184,6 +193,10 @@ class MainWindow(QMainWindow):
         cs.export_requested.connect(self._on_civil_export)
         cs.ocr_area_saved.connect(self._on_area_saved)
         cs.parallel_workers_changed.connect(self._on_parallel_workers_changed)
+
+        cp.page_reordered.connect(self._scan.reorder_page)
+        cp.page_reordered_seq.connect(self._scan.reorder_to_sequence)
+        cp.bookmark_set.connect(self._scan.set_bookmark)
 
         cs.bookmarks_export_requested.connect(self._on_bookmarks_export)
         cs.merge_requested.connect(self._on_merge_pdfs)
@@ -205,6 +218,8 @@ class MainWindow(QMainWindow):
         ap.export_requested.connect(self._on_ant_export)
         ap.fullscreen_requested.connect(self._open_fullscreen)
         ap.page_deleted.connect(self._on_page_deleted)
+        ap.page_reordered.connect(self._scan.reorder_page)
+        ap.bookmark_set.connect(self._scan.set_bookmark)
 
         self._export.job_created.connect(self._on_job_created)
         self._export.job_progress.connect(self._on_job_progress)
@@ -232,8 +247,31 @@ class MainWindow(QMainWindow):
         self._scan.import_files(paths)
 
     @Slot(object)
+    def _on_page_queued(self, page):
+        self._pending_pages.append(page)
+
+    @Slot()
+    def _flush_pending_pages(self):
+        ip = self._imp_page
+        ip.import_busy(False)
+        ip.grid.blockSignals(True)
+        cp = self._civil_sect.civil_page
+        cp._table.blockSignals(True)
+        ap = self._ant_page
+        ap.grid.blockSignals(True)
+        for page in self._pending_pages:
+            img = page.display_image
+            ip.add_page(page.index, img)
+            cp.add_page(page.index, img)
+            ap.add_page(page.index, img)
+        ip.grid.blockSignals(False)
+        cp._table.blockSignals(False)
+        ap.grid.blockSignals(False)
+        self._pending_pages.clear()
+
+    @Slot(object)
     def _on_page_added(self, page):
-        logger.debug("Página añadida: index=%d", page.index)
+        logger.debug("Página añadida directa: index=%d", page.index)
         img = page.display_image
         self._imp_page.add_page(page.index, img)
         self._civil_sect.civil_page.add_page(page.index, img)
@@ -313,6 +351,20 @@ class MainWindow(QMainWindow):
                 "image": page.display_image,
             })
         self._civil_sect.bookmarks_page.set_pages_data(pages_data)
+
+    @Slot(int, str)
+    def _on_bookmark_updated(self, index: int, label: str):
+        self._imp_page.set_bookmark(index, label)
+        self._civil_sect.civil_page.set_bookmark(index, label)
+        self._ant_page.set_bookmark(index, label)
+
+    @Slot()
+    def _on_order_changed(self):
+        pages = self._model.pages
+        self._imp_page.rebuild(pages)
+        self._civil_sect.civil_page.rebuild(pages)
+        self._ant_page.rebuild(pages)
+        self._sync_bookmarks_data()
 
     @Slot(str)
     def _on_civil_export(self, folder: str):
@@ -516,11 +568,12 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _open_fullscreen(self, index: int):
-        images = [p.display_image for p in self._model.pages]
-        if not images:
+        pages = self._model.pages
+        if not pages:
             return
-        dlg = FullscreenViewer(images, start=index, parent=self)
-        dlg.exec()
+        dlg = FullscreenViewer(pages, start=index, parent=self)
+        dlg.bookmark_changed.connect(self._scan.set_bookmark)
+        dlg.show()
 
     def closeEvent(self, event):
         self._cfg.save()

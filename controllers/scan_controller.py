@@ -106,6 +106,8 @@ class ScanController(QObject):
     import_progress = Signal(int, int)
     error           = Signal(str)
     correction_done = Signal(int)
+    order_changed    = Signal()
+    bookmark_updated = Signal(int, str)
 
     def __init__(self, model: ScanModel, config: ConfigModel, parent=None):
         super().__init__(parent)
@@ -157,6 +159,30 @@ class ScanController(QObject):
         img, a = deskew(page.original_image.copy(), angle)
         self._m.set_corrected(index, img, a)
         self.correction_done.emit(index)
+
+    @Slot(int, int)
+    def reorder_page(self, from_idx: int, to_idx: int):
+        logger.info("Reorden página %d -> %d", from_idx, to_idx)
+        self._m.reorder(from_idx, to_idx)
+        self.order_changed.emit()
+
+    @Slot(list, int)
+    def reorder_batch(self, indices: list[int], to_idx: int):
+        logger.info("Reorden batch %s -> %d", indices, to_idx)
+        self._m.reorder_batch(indices, to_idx)
+        self.order_changed.emit()
+
+    @Slot(list)
+    def reorder_to_sequence(self, indices_in_order: list[int]):
+        logger.info("Reorden a secuencia: %s", indices_in_order)
+        self._m.reorder_to_sequence(indices_in_order)
+        self.order_changed.emit()
+
+    @Slot(int, str)
+    def set_bookmark(self, index: int, label: str):
+        logger.info("Bookmark página %d: %s", index, label or "(sin)")
+        self._m.set_bookmark(index, label)
+        self.bookmark_updated.emit(index, label)
 
     @Slot(int)
     def reset_correction(self, index: int):

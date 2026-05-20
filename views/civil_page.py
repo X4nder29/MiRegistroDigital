@@ -7,28 +7,30 @@ from PySide6.QtWidgets import (
     QProgressBar, QFrame, QLineEdit, QFileDialog, QMessageBox,
     QSplitter,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer, QEvent
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QSpinBox
+from PySide6.QtWidgets import QSpinBox, QInputDialog, QMenu
 
 from views.widgets import ImageViewer
-from views.theme import SURFACE, TEXT_DIM, TEXT_SEC, SUCCESS, DANGER, WARNING, SURFACE2, BG
+from views.theme import SURFACE, TEXT_DIM, TEXT_SEC, SUCCESS, DANGER, WARNING, SURFACE2, BG, INFO
 
 
 class CivilPage(QWidget):
-    ocr_all_requested       = Signal()
-    ocr_page_requested      = Signal(int)
-    ocr_cancel_requested    = Signal()
-    serial_corrected        = Signal(int, str)
-    export_requested        = Signal(str)
-    ocr_area_saved          = Signal(int, float, float, float, float)
+    ocr_all_requested        = Signal()
+    ocr_page_requested       = Signal(int)
+    ocr_cancel_requested     = Signal()
+    serial_corrected         = Signal(int, str)
+    export_requested         = Signal(str)
+    ocr_area_saved           = Signal(int, float, float, float, float)
     parallel_workers_changed = Signal(int)
+    page_reordered           = Signal(int, int)
+    page_reordered_seq       = Signal(list)
+    bookmark_set             = Signal(int, str)
 
-    COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS = 0, 1, 2, 3
+    COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS, COL_BOOKMARK = 0, 1, 2, 3, 4
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._images: dict[int, np.ndarray] = {}
         self._current_preview: int = -1
         self._debug_active = False
         self._build()
@@ -78,17 +80,26 @@ class CivilPage(QWidget):
         lv.setContentsMargins(0, 0, 0, 0)
         lv.setSpacing(0)
 
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Página", "Serial OCR", "Confianza", "Estado"])
+        self._table = QTableWidget(0, 5)
+        self._table.setHorizontalHeaderLabels(["Página", "Serial OCR", "Confianza", "Estado", "Marcador"])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self._table.setColumnWidth(0, 70)
+        self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
+        self._table.setColumnWidth(4, 120)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
+        self._table.setDragEnabled(True)
+        self._table.setAcceptDrops(True)
+        self._table.setDragDropMode(QAbstractItemView.InternalMove)
+        self._table.setDropIndicatorShown(True)
+        self._table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._table_context_menu)
         self._table.itemChanged.connect(self._on_item_changed)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
+        self._table.installEventFilter(self)
         lv.addWidget(self._table, 1)
 
         bottom = QFrame()
@@ -213,7 +224,48 @@ class CivilPage(QWidget):
 
         return panel
 
-    def add_page(self, index: int, image: np.ndarray | None = None):
+    def eventFilter(self, obj, event):
+        if obj is self._table and event.type() == QEvent.Drop:
+            QTimer.singleShot(0, self._detect_new_order)
+        return super().eventFilter(obj, event)
+
+    def _detect_new_order(self):
+        order = []
+        for r in range(self._table.rowCount()):
+            item = self._table.item(r, 0)
+            if item:
+                order.append(item.data(Qt.UserRole))
+        if order:
+            self.page_reordered_seq.emit(order)
+
+    def _table_context_menu(self, pos):
+        item = self._table.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        n_item = self._table.item(row, 0)
+        if not n_item:
+            return
+        idx = n_item.data(Qt.UserRole)
+        menu = QMenu(self)
+        act_bm = menu.addAction("Añadir/quitar marcador…")
+        menu.addSeparator()
+        action = menu.exec(self._table.mapToGlobal(pos))
+        if action == act_bm:
+            current = self._table.item(row, self.COL_BOOKMARK)
+            cur_text = current.text() if current and current.text() not in ("", "—") else ""
+            text, ok = QInputDialog.getText(
+                self, "Marcador",
+                "Nombre del marcador (vacío para quitar):",
+                text=cur_text)
+            if ok:
+                self._table.blockSignals(True)
+                if self._table.item(row, self.COL_BOOKMARK):
+                    self._table.item(row, self.COL_BOOKMARK).setText(text.strip())
+                self._table.blockSignals(False)
+                self.bookmark_set.emit(idx, text.strip())
+
+    def add_page(self, index: int, image: np.ndarray | None = None, bookmark: str = ""):
         self._table.blockSignals(True)
         row = self._table.rowCount()
         self._table.insertRow(row)
@@ -235,19 +287,39 @@ class CivilPage(QWidget):
         e.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         e.setForeground(QColor(TEXT_DIM))
 
+        b = QTableWidgetItem(bookmark)
+        b.setTextAlignment(Qt.AlignCenter)
+        if bookmark:
+            b.setForeground(QColor(INFO))
+
         self._table.setItem(row, 0, n)
         self._table.setItem(row, 1, s)
         self._table.setItem(row, 2, c)
         self._table.setItem(row, 3, e)
+        self._table.setItem(row, 4, b)
         self._table.blockSignals(False)
-        if image is not None:
-            self._images[index] = image
         self._refresh_summary()
 
     def set_image(self, index: int, image: np.ndarray):
-        self._images[index] = image
         if index == self._current_preview:
             self._preview_viewer.set_image(image)
+
+    def set_bookmark(self, page_index: int, label: str):
+        self._table.blockSignals(True)
+        row = self._row_for(page_index)
+        if row >= 0:
+            item = self._table.item(row, self.COL_BOOKMARK)
+            if item:
+                item.setText(label)
+                item.setForeground(QColor(INFO) if label else QColor(TEXT_DIM))
+        self._table.blockSignals(False)
+
+    def rebuild(self, pages_data: list):
+        self.clear()
+        for pd in pages_data:
+            self.add_page(pd.index, pd.display_image, pd.bookmark)
+            if pd.serial:
+                self.set_ocr_result(pd.index, pd.serial, pd.serial_confidence)
 
     def set_ocr_result(self, page_index: int, serial: str, conf: float):
         self._table.blockSignals(True)
@@ -309,7 +381,6 @@ class CivilPage(QWidget):
         row = self._row_for(index)
         if row >= 0:
             self._table.removeRow(row)
-        self._images.pop(index, None)
         for r in range(self._table.rowCount()):
             item = self._table.item(r, 0)
             if item:
@@ -321,7 +392,6 @@ class CivilPage(QWidget):
 
     def clear(self):
         self._table.setRowCount(0)
-        self._images.clear()
         self._current_preview = -1
         self._clear_preview()
         self._refresh_summary()
@@ -358,21 +428,19 @@ class CivilPage(QWidget):
             return
         idx = n.data(Qt.UserRole)
         self._current_preview = idx
-        img = self._images.get(idx)
-        if img is not None:
-            self._preview_viewer.set_image(img)
+        from models.scan_model import ScanModel
+        from PySide6.QtWidgets import QApplication
+        mw = QApplication.instance().activeWindow()
+        page = mw._model.get(idx) if mw and hasattr(mw, '_model') else None
+        if page:
+            self._preview_viewer.set_image(page.display_image)
             self._preview_idx.setText(f"Página {idx + 1}")
-            from models.scan_model import ScanModel
-            from PySide6.QtWidgets import QApplication
-            mw = QApplication.instance().activeWindow()
-            if mw and hasattr(mw, '_model'):
-                page = mw._model.get(idx)
-                if page and page.ocr_area:
-                    self._preview_viewer.set_ocr_area_preview(page.ocr_area)
-                    self._area_status.setText("Área OCR definida")
-                else:
-                    self._preview_viewer.set_ocr_area_preview(None)
-                    self._area_status.setText("Sin área OCR")
+            if page.ocr_area:
+                self._preview_viewer.set_ocr_area_preview(page.ocr_area)
+                self._area_status.setText("Área OCR definida")
+            else:
+                self._preview_viewer.set_ocr_area_preview(None)
+                self._area_status.setText("Sin área OCR")
             self._update_debug_overlay()
         else:
             self._clear_preview()

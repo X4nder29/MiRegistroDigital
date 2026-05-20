@@ -53,6 +53,41 @@ class ScanModel:
         for p in self._pages:
             p.is_cut_point = p.index in indices
 
+    def reorder(self, from_idx: int, to_idx: int):
+        if from_idx == to_idx:
+            return
+        if 0 <= from_idx < len(self._pages) and 0 <= to_idx < len(self._pages):
+            page = self._pages.pop(from_idx)
+            self._pages.insert(to_idx, page)
+            for i, p in enumerate(self._pages):
+                p.index = i
+
+    def reorder_batch(self, indices: list[int], to_idx: int):
+        if not indices:
+            return
+        indices = sorted(set(indices), reverse=True)
+        pages = [self._pages.pop(i) for i in indices]
+        insert_at = min(to_idx, len(self._pages))
+        for i, p in enumerate(pages):
+            self._pages.insert(insert_at + i, p)
+        for i, p in enumerate(self._pages):
+            p.index = i
+
+    def set_bookmark(self, index: int, label: str):
+        p = self.get(index)
+        if p:
+            p.bookmark = label
+
+    def reorder_to_sequence(self, indices_in_order: list[int]):
+        if len(indices_in_order) != len(self._pages):
+            return
+        if set(indices_in_order) != {p.index for p in self._pages}:
+            return
+        mapping = {p.index: p for p in self._pages}
+        self._pages = [mapping[i] for i in indices_in_order]
+        for i, p in enumerate(self._pages):
+            p.index = i
+
     def get_groups(self) -> list[list[PageData]]:
         if not self._pages:
             return []

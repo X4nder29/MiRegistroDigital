@@ -12,6 +12,7 @@ class PageData:
     serial: Optional[str] = None
     serial_confidence: float = 0.0
     user_label: Optional[str] = None
+    bookmark: str = ""
     is_cut_point: bool = False
     rotation_angle: float = 0.0
     dpi: int = 300

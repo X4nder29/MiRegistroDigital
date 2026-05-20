@@ -20,9 +20,11 @@ class ScanPage(QWidget):
     page_deleted           = Signal(int)
     fullscreen_requested   = Signal(int)
     navigate               = Signal(str)
-    correction_requested   = Signal(int)         # index -> auto perspectiva
-    rotation_changed       = Signal(int, float)  # index, angle
-    reset_correction       = Signal(int)         # index
+    correction_requested   = Signal(int)
+    rotation_changed       = Signal(int, float)
+    reset_correction       = Signal(int)
+    page_reordered         = Signal(int, int)
+    bookmark_set           = Signal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +59,8 @@ class ScanPage(QWidget):
         self.grid.cut_toggled.connect(self.cut_toggled)
         self.grid.page_deleted.connect(self.page_deleted)
         self.grid.fullscreen_requested.connect(self.fullscreen_requested)
+        self.grid.reorder_requested.connect(self.page_reordered)
+        self.grid.bookmark_requested.connect(self.bookmark_set)
         splitter.addWidget(self.grid)
 
         self.viewer = ImageViewer()
@@ -141,6 +145,28 @@ class ScanPage(QWidget):
 
     def set_serial(self, index: int, serial: str, conf: float):
         self.grid.set_serial(index, serial, conf)
+
+    def set_bookmark(self, index: int, label: str):
+        self.grid.set_bookmark(index, label)
+
+    def reorder_cards(self, from_idx: int, to_idx: int):
+        self.grid.reorder_cards(from_idx, to_idx)
+        if self._current == from_idx:
+            self._current = to_idx
+
+    def rebuild(self, pages_data: list):
+        self.grid.blockSignals(True)
+        self.grid.clear_all()
+        for pd in pages_data:
+            c = self.grid.add_page(pd.index, pd.display_image)
+            if pd.serial:
+                c.set_serial(pd.serial, pd.serial_confidence)
+            if pd.is_cut_point:
+                c.set_cut_point(True)
+            if pd.bookmark:
+                c.set_bookmark(pd.bookmark)
+        self._update_status()
+        self.grid.blockSignals(False)
 
     def remove_page(self, index: int):
         self.grid.remove_page(index)
