@@ -4,11 +4,12 @@ import numpy as np
 from PySide6.QtWidgets import (
     QLabel, QFrame, QWidget, QScrollArea, QGridLayout,
     QVBoxLayout, QHBoxLayout, QSizePolicy, QPushButton,
-    QMenu, QDialog, QToolBar, QRubberBand, QCheckBox,
-    QInputDialog,
+    QMenu, QToolBar, QRubberBand, QCheckBox, QApplication,
+    QInputDialog, QDialog, QProgressBar,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint, QMimeData, QEvent, QTimer
-from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter
+from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter, QWheelEvent, QDesktopServices
+from PySide6.QtCore import QUrl
 
 from utils.image_utils import ndarray_to_qpixmap
 from views.theme import (
@@ -35,6 +36,10 @@ class ImageViewer(QLabel):
         self._preview_band: QRubberBand | None = None
         self._debug_rect: tuple[float, float, float, float] | None = None
         self._debug_band: QRubberBand | None = None
+        self._zoom_enabled = False
+        self._zoom_level = 1.0
+        self._panning = False
+        self._pan_start = QPoint()
 
     def enable_area_selection(self, enable: bool = True):
         if self._area_preview and enable:
@@ -69,6 +74,29 @@ class ImageViewer(QLabel):
                 self._preview_band.setGeometry(
                     QRect(round(x1), round(y1), round(x2 - x1), round(y2 - y1)))
 
+    def set_zoom_enabled(self, enabled: bool):
+        self._zoom_enabled = enabled
+        if not enabled:
+            self._zoom_level = 1.0
+            self._panning = False
+        self._rescale()
+
+    def zoom_in(self):
+        if self._zoom_enabled:
+            self._zoom_level = min(self._zoom_level * 1.4, 10.0)
+            self._rescale()
+
+    def zoom_out(self):
+        if self._zoom_enabled:
+            self._zoom_level = max(self._zoom_level / 1.4, 0.2)
+            self._rescale()
+
+    def zoom_fit(self):
+        if self._zoom_enabled:
+            self._zoom_level = 1.0
+            self._panning = False
+            self._rescale()
+
     def set_image(self, image: np.ndarray | None):
         if image is None:
             self._pixmap = None
@@ -76,9 +104,28 @@ class ImageViewer(QLabel):
             return
         self._pixmap = ndarray_to_qpixmap(image)
         self.setText("")
+        if not self._zoom_enabled:
+            self._zoom_level = 1.0
+        self._panning = False
         self._rescale()
 
+    def wheelEvent(self, event: QWheelEvent):
+        if self._zoom_enabled and event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            elif delta < 0:
+                self.zoom_out()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
     def mousePressEvent(self, event):
+        if self._zoom_enabled and self._zoom_level > 1.0 and event.button() == Qt.LeftButton and not self._selecting and self._pixmap:
+            self._panning = True
+            self._pan_start = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            return
         if self._selecting and event.button() == Qt.LeftButton and self._pixmap:
             self._origin = event.pos()
             if not self._rubber_band:
@@ -89,11 +136,36 @@ class ImageViewer(QLabel):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._panning:
+            delta = event.pos() - self._pan_start
+            self._pan_start = event.pos()
+            scroll = self._find_scroll_area()
+            if scroll:
+                hsb = scroll.horizontalScrollBar()
+                vsb = scroll.verticalScrollBar()
+                hsb.setValue(hsb.value() - delta.x())
+                vsb.setValue(vsb.value() - delta.y())
+            return
         if self._selecting and self._rubber_band and self._rubber_band.isVisible():
             rect = QRect(self._origin, event.pos()).normalized()
             self._rubber_band.setGeometry(rect)
             return
         super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._panning and event.button() == Qt.LeftButton:
+            self._panning = False
+            self.setCursor(Qt.ArrowCursor)
+            return
+        super().mouseReleaseEvent(event)
+
+    def _find_scroll_area(self):
+        p = self.parent()
+        while p:
+            if isinstance(p, QScrollArea):
+                return p
+            p = p.parent()
+        return None
 
     def _pixmap_rect(self) -> QRect:
         if not self._pixmap:
@@ -101,6 +173,11 @@ class ImageViewer(QLabel):
         pw, ph = self._pixmap.width(), self._pixmap.height()
         if pw == 0 or ph == 0:
             return QRect()
+        if self._zoom_enabled:
+            pix = self.pixmap()
+            if pix:
+                return QRect(0, 0, pix.width(), pix.height())
+            return QRect(0, 0, pw, ph)
         sw, sh = self.width(), self.height()
         scale = min(sw / pw, sh / ph, 1.0)
         dw, dh = int(pw * scale), int(ph * scale)
@@ -151,23 +228,44 @@ class ImageViewer(QLabel):
                 self._debug_band.setGeometry(
                     QRect(round(x1), round(y1), round(x2 - x1), round(y2 - y1)))
 
+    def _viewport_size(self) -> tuple[int, int]:
+        scroll = self._find_scroll_area()
+        if scroll:
+            vp = scroll.viewport()
+            return vp.width(), vp.height()
+        return self.width(), self.height()
+
+    def _rescale(self):
+        if not self._pixmap:
+            return
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        if self._zoom_enabled:
+            sw, sh = self._viewport_size()
+            fit_scale = min(sw / pw, sh / ph, 1.0)
+            scale = fit_scale * self._zoom_level
+            new_w = max(1, int(pw * scale))
+            new_h = max(1, int(ph * scale))
+            self.setPixmap(self._pixmap.scaled(
+                new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.setFixedSize(new_w, new_h)
+        else:
+            self.setPixmap(self._pixmap.scaled(
+                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(QSize(16777215, 16777215))
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._rescale()
         self._update_preview_band()
         self._update_debug_band()
 
-    def _rescale(self):
-        if self._pixmap:
-            self.setPixmap(self._pixmap.scaled(
-                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-
 
 class FullscreenViewer(QDialog):
     bookmark_changed = Signal(int, str)
 
     def __init__(self, pages_data: list, start: int = 0, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, Qt.Window)
         self.setWindowTitle("Vista completa")
         self.resize(1000, 750)
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -187,6 +285,27 @@ class FullscreenViewer(QDialog):
         act_next = QAction("Siguiente  ›", self)
         act_next.setShortcut(QKeySequence(Qt.Key_Right))
         act_next.triggered.connect(self._next)
+
+        act_zoomin = QAction("🔍+", self)
+        act_zoomin.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_Plus))
+        act_zoomin.setToolTip("Acercar (Ctrl++)")
+        act_zoomin.triggered.connect(self._zoom_in)
+
+        act_zoomout = QAction("🔍−", self)
+        act_zoomout.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_Minus))
+        act_zoomout.setToolTip("Alejar (Ctrl+-)")
+        act_zoomout.triggered.connect(self._zoom_out)
+
+        act_zoomfit = QAction("🔍", self)
+        act_zoomfit.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_0))
+        act_zoomfit.setToolTip("Ajustar (Ctrl+0)")
+        act_zoomfit.triggered.connect(self._zoom_fit)
+
+        act_bookmark = QAction("Marcador", self)
+        act_bookmark.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_B))
+        act_bookmark.setToolTip("Añadir/editar marcador (Ctrl+B)")
+        act_bookmark.triggered.connect(self._edit_bookmark)
+
         act_close = QAction("✕  Cerrar", self)
         act_close.setShortcut(QKeySequence(Qt.Key_Escape))
         act_close.triggered.connect(self.close)
@@ -206,11 +325,26 @@ class FullscreenViewer(QDialog):
         tb.addSeparator()
         tb.addWidget(self._bm_label)
         tb.addSeparator()
+        tb.addAction(act_zoomin)
+        tb.addAction(act_zoomout)
+        tb.addAction(act_zoomfit)
+        tb.addSeparator()
+        tb.addAction(act_bookmark)
+        tb.addSeparator()
         tb.addAction(act_close)
         layout.addWidget(tb)
 
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setStyleSheet("QScrollArea { border: none; }")
+
         self._viewer = ImageViewer()
-        layout.addWidget(self._viewer)
+        self._viewer.set_zoom_enabled(True)
+        self._scroll.setWidget(self._viewer)
+
+        layout.addWidget(self._scroll, 1)
         self._show_current()
 
     def _show_current(self):
@@ -233,6 +367,15 @@ class FullscreenViewer(QDialog):
             self._bm_label.setText(f"  {label}  " if label else "  + Marcador  ")
             self.bookmark_changed.emit(p.index, label)
 
+    def _zoom_in(self):
+        self._viewer.zoom_in()
+
+    def _zoom_out(self):
+        self._viewer.zoom_out()
+
+    def _zoom_fit(self):
+        self._viewer.zoom_fit()
+
     def _prev(self):
         if self._idx > 0:
             self._idx -= 1
@@ -242,6 +385,147 @@ class FullscreenViewer(QDialog):
         if self._idx < len(self._pages) - 1:
             self._idx += 1
             self._show_current()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Left:
+            self._prev()
+        elif event.key() == Qt.Key_Right:
+            self._next()
+        else:
+            super().keyPressEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent):
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self._zoom_in()
+            elif delta < 0:
+                self._zoom_out()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
+class ProcessItem(QFrame):
+    def __init__(self, job_id: str, label: str, total: int, parent=None):
+        super().__init__(parent)
+        self.job_id = job_id
+        self.setFixedHeight(60)
+        self.setStyleSheet(f"background:{SURFACE2}; border:none; border-radius:6px;")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.setSpacing(8)
+
+        info = QWidget()
+        info.setStyleSheet("border:none; background:transparent;")
+        iv = QVBoxLayout(info)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(4)
+
+        self._title = QLabel(label)
+        self._title.setStyleSheet("font-size:9pt; border:none;")
+        iv.addWidget(self._title)
+
+        self._prog = QProgressBar()
+        self._prog.setFixedHeight(4)
+        self._prog.setTextVisible(False)
+        self._prog.setRange(0, max(total, 1))
+        self._prog.setValue(0)
+        iv.addWidget(self._prog)
+
+        self._status = QLabel("En cola…")
+        self._status.setStyleSheet(f"font-size:8pt; color:{TEXT_DIM}; border:none;")
+        iv.addWidget(self._status)
+        lay.addWidget(info, 1)
+
+        self._btn = QPushButton("✕")
+        self._btn.setFixedSize(24, 24)
+        self._btn.setVisible(False)
+        lay.addWidget(self._btn)
+
+    def update(self, current: int, total: int, status_text: str,
+               status_color: str = TEXT_DIM, done: bool = False):
+        self._prog.setMaximum(max(total, 1))
+        self._prog.setValue(current)
+        self._status.setText(status_text)
+        self._status.setStyleSheet(f"font-size:8pt; color:{status_color}; border:none;")
+
+
+class ProcessListDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Procesos activos")
+        self.resize(480, 360)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(8)
+
+        title = QLabel("Procesos en ejecución")
+        title.setStyleSheet("font-size:13pt; font-weight:bold; border:none;")
+        root.addWidget(title)
+
+        self._placeholder = QLabel("Sin procesos activos")
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._placeholder.setStyleSheet(f"color:{TEXT_DIM}; font-size:10pt; border:none;")
+        root.addWidget(self._placeholder)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;")
+
+        self._content = QWidget()
+        self._content.setStyleSheet("border:none; background:transparent;")
+        self._list = QVBoxLayout(self._content)
+        self._list.setContentsMargins(0, 0, 0, 0)
+        self._list.setSpacing(6)
+        self._list.addStretch()
+        scroll.setWidget(self._content)
+        root.addWidget(scroll, 1)
+
+        btn_close = QPushButton("Cerrar")
+        btn_close.setFixedHeight(32)
+        btn_close.clicked.connect(self.accept)
+        root.addWidget(btn_close)
+
+        self._items: dict[str, ProcessItem] = {}
+
+    def add_job(self, job_id: str, label: str, total: int):
+        self._placeholder.setVisible(False)
+        item = ProcessItem(job_id, label, total)
+        self._items[job_id] = item
+        self._list.insertWidget(self._list.count() - 1, item)
+
+    def update_job(self, job_id: str, current: int, total: int):
+        item = self._items.get(job_id)
+        if item:
+            item.update(current, total, f"{current}/{total} páginas")
+
+    def set_job_done(self, job_id: str, path: str):
+        item = self._items.get(job_id)
+        if item:
+            item.update(1, 1, "Completado", TEXT_DIM, done=True)
+            item._btn.setVisible(True)
+
+    def set_job_error(self, job_id: str, msg: str):
+        item = self._items.get(job_id)
+        if item:
+            item.update(0, 1, f"Error: {msg}", DANGER)
+
+    def set_job_cancelled(self, job_id: str):
+        item = self._items.get(job_id)
+        if item:
+            item.update(0, 1, "Cancelado", TEXT_DIM)
+
+    def remove_job(self, job_id: str):
+        item = self._items.pop(job_id, None)
+        if item:
+            self._list.removeWidget(item)
+            item.deleteLater()
+        if not self._items:
+            self._placeholder.setVisible(True)
 
 
 THUMB_W, THUMB_H = 140, 196
