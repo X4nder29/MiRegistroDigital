@@ -19,7 +19,7 @@ logger = logging.getLogger("docscan.scan")
 
 class _ImportWorker(QRunnable):
     class S(QObject):
-        page     = Signal(np.ndarray, str)
+        page     = Signal(np.ndarray, str, int)  # image, source_path, source_page
         progress = Signal(int, int)
         done     = Signal()
         error    = Signal(str)
@@ -79,7 +79,8 @@ class _ImportWorker(QRunnable):
                 nonlocal next_expected
                 while next_expected in buffer:
                     img = buffer.pop(next_expected)
-                    self.s.page.emit(img, str(tasks[next_expected][0]))
+                    path, pg = tasks[next_expected]
+                    self.s.page.emit(img, str(path), pg if pg is not None else -1)
                     self.s.progress.emit(next_expected + 1, total)
                     next_expected += 1
 
@@ -235,11 +236,11 @@ class ScanController(QObject):
         self._m.set_corrected(index, None, 0.0)
         self.correction_done.emit(index)
 
-    @Slot(np.ndarray, str)
-    def _on_page_src(self, image: np.ndarray, src: str):
-        self._process_and_add(image, src)
+    @Slot(np.ndarray, str, int)
+    def _on_page_src(self, image: np.ndarray, src: str, src_page: int = -1):
+        self._process_and_add(image, src, src_page)
 
-    def _process_and_add(self, image: np.ndarray, src: str):
-        page = self._m.add_page(image, 300, src)
+    def _process_and_add(self, image: np.ndarray, src: str, src_page: int = -1):
+        page = self._m.add_page(image, 300, src, source_page=src_page)
         logger.debug("Página añadida al modelo: index=%d, src=%s", page.index, src)
         self.page_added.emit(page)

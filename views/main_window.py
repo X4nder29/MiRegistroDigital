@@ -251,6 +251,8 @@ class MainWindow(QMainWindow):
         cs.serial_corrected.connect(self._ocr.override)
         cs.export_requested.connect(self._on_civil_export)
         cs.export_bookmark_requested.connect(self._on_civil_export_bookmark)
+        cs.comment_set.connect(self._on_comment_set)
+        cs.export_original_pdf_requested.connect(self._on_export_original_pdf)
         cs.ocr_area_saved.connect(self._on_area_saved)
         cs.parallel_workers_changed.connect(self._on_parallel_workers_changed)
 
@@ -282,6 +284,8 @@ class MainWindow(QMainWindow):
         ap.page_deleted.connect(self._on_page_deleted)
         ap.page_reordered.connect(self._scan.reorder_page)
         ap.bookmark_set.connect(self._scan.set_bookmark)
+        ap.comment_set.connect(self._on_comment_set)
+        ap.export_original_pdf_requested.connect(self._on_export_original_pdf)
 
         self._export.job_created.connect(self._on_job_created)
         self._export.job_progress.connect(self._on_job_progress)
@@ -455,6 +459,34 @@ class MainWindow(QMainWindow):
                 self._custom_handlers.pop(jid, None)
             def err(jid: str, msg: str):
                 cp.export_bookmark_error(msg)
+                self._custom_handlers.pop(jid, None)
+            self._custom_handlers[job_id] = (done, err)
+
+    @Slot(int, str)
+    def _on_comment_set(self, index: int, text: str):
+        self._model.set_comment(index, text)
+
+    @Slot(str)
+    def _on_export_original_pdf(self, folder: str):
+        logger.info("Exportación PDF original solicitada -> %s", folder)
+        from PySide6.QtWidgets import QApplication
+        mw = QApplication.instance().activeWindow()
+        cp = self._civil_sect.civil_page
+        ap = self._ant_page
+        cp.export_original_started()
+        ap.export_original_started()
+        job_id = self._export.export_original_pdf(folder, "PDF original")
+        if not job_id:
+            cp.export_original_error("No hay páginas para exportar.")
+            ap.export_original_error("No hay páginas para exportar.")
+        else:
+            def done(jid: str, path: str):
+                cp.export_original_finished(path)
+                ap.export_original_finished(path)
+                self._custom_handlers.pop(jid, None)
+            def err(jid: str, msg: str):
+                cp.export_original_error(msg)
+                ap.export_original_error(msg)
                 self._custom_handlers.pop(jid, None)
             self._custom_handlers[job_id] = (done, err)
 

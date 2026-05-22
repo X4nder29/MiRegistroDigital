@@ -13,11 +13,13 @@ class PageData:
     serial_confidence: float = 0.0
     user_label: Optional[str] = None
     bookmark: str = ""
+    comment: str = ""
     is_cut_point: bool = False
     rotation_angle: float = 0.0
     dpi: int = 300
     source_path: str = ""
     ocr_area: Optional[tuple[float, float, float, float]] = None
+    source_page: int = -1
 
     @property
     def display_image(self) -> np.ndarray:

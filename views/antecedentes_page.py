@@ -20,7 +20,9 @@ class AntecedentesPage(QWidget):
     fullscreen_requested = Signal(int)
     page_deleted         = Signal(int)
     page_reordered       = Signal(int, int)
-    bookmark_set         = Signal(int, str)
+    bookmark_set              = Signal(int, str)
+    comment_set               = Signal(int, str)
+    export_original_pdf_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -68,6 +70,7 @@ class AntecedentesPage(QWidget):
         self.grid.fullscreen_requested.connect(self.fullscreen_requested)
         self.grid.reorder_requested.connect(self.page_reordered)
         self.grid.bookmark_requested.connect(self.bookmark_set)
+        self.grid.comment_requested.connect(self.comment_set)
         self._splitter.addWidget(self.grid)
 
         self._right_panel = self._build_right_panel()
@@ -173,6 +176,12 @@ class AntecedentesPage(QWidget):
         self._btn_export_split.clicked.connect(self._do_export_split_bookmark)
         el.addWidget(self._btn_export_split)
 
+        self._btn_export_orig = QPushButton("  Exportar PDF original")
+        self._btn_export_orig.setFixedHeight(34)
+        self._btn_export_orig.setToolTip("PDF con las imágenes originales y comentarios")
+        self._btn_export_orig.clicked.connect(self._do_export_original_pdf)
+        el.addWidget(self._btn_export_orig)
+
         v.addWidget(exp_box)
 
         v.addStretch()
@@ -256,6 +265,18 @@ class AntecedentesPage(QWidget):
         self._btn_export_split.setEnabled(True)
         self._btn_export_split.setText("  Varios PDFs por marcador")
 
+    def export_original_started(self):
+        self._btn_export_orig.setEnabled(False)
+        self._btn_export_orig.setText("Generando…")
+
+    def export_original_finished(self, path: str):
+        self._btn_export_orig.setEnabled(True)
+        self._btn_export_orig.setText("  Exportar PDF original")
+
+    def export_original_error(self, msg: str):
+        self._btn_export_orig.setEnabled(True)
+        self._btn_export_orig.setText("  Exportar PDF original")
+
     def clear(self):
         self.grid.clear_all()
         self._groups_list.clear()
@@ -325,3 +346,11 @@ class AntecedentesPage(QWidget):
             "hasta":      self._spin_hasta.value() if self._chk_range.isChecked() else 0,
         }
         self.export_split_bookmark.emit(params)
+
+    def _do_export_original_pdf(self):
+        folder = self._folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Carpeta requerida",
+                                "Selecciona una carpeta de destino.")
+            return
+        self.export_original_pdf_requested.emit(folder)

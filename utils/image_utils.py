@@ -99,6 +99,30 @@ def ndarray_to_qpixmap(image: np.ndarray, max_size: Optional[Tuple[int, int]] = 
     return QPixmap.fromImage(qimg.copy())
 
 
+def overlay_comment(image: np.ndarray, text: str) -> np.ndarray:
+    """Overlay comment text at the bottom of the image. Returns a copy."""
+    if not text.strip():
+        return image.copy()
+    out = image.copy()
+    h, w = out.shape[:2]
+    lines = text.strip().split("\n")
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.5, min(1.0, w / 1200))
+    thickness = max(1, int(font_scale * 1.5))
+    line_h = cv2.getTextSize("Ag", font, font_scale, thickness)[0][1] + 8
+    bar_h = len(lines) * line_h + 16
+    bar_h = min(bar_h, h // 3)
+    overlay = out.copy()
+    cv2.rectangle(overlay, (0, h - bar_h), (w, h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, out, 0.4, 0, out)
+    for i, line in enumerate(lines):
+        tw = cv2.getTextSize(line, font, font_scale, thickness)[0][0]
+        x = (w - tw) // 2
+        y = h - bar_h + 16 + i * line_h + line_h - 4
+        cv2.putText(out, line, (x, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    return out
+
+
 def _gray(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2:
         return img

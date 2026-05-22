@@ -26,8 +26,10 @@ class CivilPage(QWidget):
     parallel_workers_changed = Signal(int)
     page_reordered           = Signal(int, int)
     page_reordered_seq       = Signal(list)
-    bookmark_set             = Signal(int, str)
-
+    bookmark_set              = Signal(int, str)
+    comment_set               = Signal(int, str)
+    export_original_pdf_requested = Signal(str)
+ 
     COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS, COL_BOOKMARK = 0, 1, 2, 3, 4
 
     def __init__(self, parent=None):
@@ -138,6 +140,11 @@ class CivilPage(QWidget):
         self._btn_export_bm.setToolTip("Un PDF por página con el marcador como nombre")
         self._btn_export_bm.clicked.connect(self._do_export_bookmark)
 
+        self._btn_export_orig = QPushButton("  Exportar PDF original")
+        self._btn_export_orig.setFixedHeight(34)
+        self._btn_export_orig.setToolTip("PDF con las imágenes originales y comentarios")
+        self._btn_export_orig.clicked.connect(self._do_export_original_pdf)
+
         btn_ocr_sel = QPushButton("  OCR página")
         btn_ocr_sel.setFixedHeight(32)
         btn_ocr_sel.clicked.connect(self._ocr_selected)
@@ -151,6 +158,7 @@ class CivilPage(QWidget):
         bl.addWidget(btn_browse)
         bl.addWidget(self._btn_export)
         bl.addWidget(self._btn_export_bm)
+        bl.addWidget(self._btn_export_orig)
         lv.addWidget(bottom)
 
         splitter.addWidget(left)
@@ -256,6 +264,7 @@ class CivilPage(QWidget):
         idx = n_item.data(Qt.UserRole)
         menu = QMenu(self)
         act_bm = menu.addAction("Añadir/quitar marcador…")
+        act_cm = menu.addAction("Añadir/quitar comentario…")
         menu.addSeparator()
         action = menu.exec(self._table.mapToGlobal(pos))
         if action == act_bm:
@@ -271,6 +280,17 @@ class CivilPage(QWidget):
                     self._table.item(row, self.COL_BOOKMARK).setText(text.strip())
                 self._table.blockSignals(False)
                 self.bookmark_set.emit(idx, text.strip())
+        elif action == act_cm:
+            from models.scan_model import ScanModel
+            from PySide6.QtWidgets import QApplication
+            mw = QApplication.instance().activeWindow()
+            cur_comment = mw._model.get(idx).comment if mw and hasattr(mw, '_model') else ""
+            text, ok = QInputDialog.getMultiLineText(
+                self, "Comentario",
+                "Comentario para esta página (vacío para quitar):",
+                text=cur_comment)
+            if ok:
+                self.comment_set.emit(idx, text.strip())
 
     def add_page(self, index: int, image: np.ndarray | None = None, bookmark: str = ""):
         self._table.blockSignals(True)
@@ -392,6 +412,21 @@ class CivilPage(QWidget):
     def export_bookmark_error(self, msg: str):
         self._btn_export_bm.setEnabled(True)
         self._btn_export_bm.setText("  Exportar por marcador")
+
+    def set_comment(self, page_index: int, text: str):
+        pass  # no table column for comment
+
+    def export_original_started(self):
+        self._btn_export_orig.setEnabled(False)
+        self._btn_export_orig.setText("Generando…")
+
+    def export_original_finished(self, path: str):
+        self._btn_export_orig.setEnabled(True)
+        self._btn_export_orig.setText("  Exportar PDF original")
+
+    def export_original_error(self, msg: str):
+        self._btn_export_orig.setEnabled(True)
+        self._btn_export_orig.setText("  Exportar PDF original")
 
     def remove_page(self, index: int):
         row = self._row_for(index)
@@ -568,6 +603,14 @@ class CivilPage(QWidget):
                                 "Selecciona una carpeta de destino.")
             return
         self.export_bookmark_requested.emit(folder)
+
+    def _do_export_original_pdf(self):
+        folder = self._folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Carpeta requerida",
+                                "Selecciona una carpeta de destino.")
+            return
+        self.export_original_pdf_requested.emit(folder)
 
     def _row_for(self, page_index: int) -> int:
         for r in range(self._table.rowCount()):

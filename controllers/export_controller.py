@@ -411,6 +411,90 @@ class ExportController(QObject):
             groups.append(cur)
         return groups
 
+    def export_original_pdf(self, folder: str, label: str = "") -> str:
+        pages = self._m.pages
+        if not pages:
+            return ""
+
+        job = Job(job_type=JobType.CIVIL,
+                  label=label or f"PDF original #{len(self._jobs) + 1}",
+                  total=len(pages))
+        self._jobs[job.id] = job
+        self.job_created.emit(job)
+
+        pdf_path = unique(Path(folder) / "documento_original.pdf")
+
+        class _Worker(QRunnable):
+            class S(QObject):
+                progress = Signal(str, int, int)
+                done     = Signal(str, str)
+                error    = Signal(str, str)
+            def __init__(self, j, pgs, out):
+                super().__init__()
+                self.s = _Worker.S()
+                self.job, self.pages, self.out = j, pgs, out
+            @Slot()
+            def run(self):
+                try:
+                    import fitz
+                    same_source = len({p.source_path for p in self.pages}) == 1
+                    has_pdf_src = same_source and self.pages and \
+                        self.pages[0].source_path.lower().endswith('.pdf') and \
+                        all(p.source_page >= 0 for p in self.pages)
+
+                    doc = fitz.Document()
+                    tocs = []
+
+                    if has_pdf_src:
+                        src = fitz.open(self.pages[0].source_path)
+                        for i, page in enumerate(self.pages):
+                            self.s.progress.emit(self.job.id, i + 1, len(self.pages))
+                            doc.insert_pdf(src, from_page=page.source_page, to_page=page.source_page)
+                            if page.comment:
+                                p = doc[-1]
+                                r = p.rect
+                                bh = min(60, r.height // 3)
+                                rect = fitz.Rect(0, r.y1 - bh, r.x1, r.y1)
+                                p.add_freetext_annot(
+                                    rect, page.comment,
+                                    fontsize=9, fontname="helv",
+                                    text_color=(1, 1, 1),
+                                    fill_color=(0, 0, 0),
+                                    border_width=0,
+                                )
+                            if page.bookmark:
+                                tocs.append([1, page.bookmark, i + 1])
+                        src.close()
+                    else:
+                        import cv2
+                        from utils.image_utils import overlay_comment
+                        for i, page in enumerate(self.pages):
+                            self.s.progress.emit(self.job.id, i + 1, len(self.pages))
+                            img = overlay_comment(page.original_image, page.comment)
+                            if img.ndim == 2 or img.shape[2] == 1:
+                                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                            _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                            p = doc.new_page(width=img.shape[1], height=img.shape[0])
+                            p.insert_image(p.rect, stream=buf.tobytes())
+                            if page.bookmark:
+                                tocs.append([1, page.bookmark, i + 1])
+
+                    if tocs:
+                        doc.set_toc(tocs)
+                    doc.save(self.out, garbage=4, deflate=True)
+                    doc.close()
+                    self.s.done.emit(self.job.id, self.out)
+                except Exception as e:
+                    self.s.error.emit(self.job.id, str(e))
+
+        w = _Worker(job, pages, str(pdf_path))
+        w.s.progress.connect(self._on_progress)
+        w.s.done.connect(self._on_done)
+        w.s.error.connect(self._on_error)
+        self._workers[job.id] = w
+        self._pool.start(w)
+        return job.id
+
     @staticmethod
     def _build_groups_by_bookmark(pages: list[PageData]) -> list[list[PageData]]:
         if not pages:

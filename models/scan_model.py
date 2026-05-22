@@ -16,8 +16,8 @@ class ScanModel:
     def count(self) -> int:
         return len(self._pages)
 
-    def add_page(self, image: np.ndarray, dpi: int = 300, source: str = "") -> PageData:
-        page = PageData(index=len(self._pages), original_image=image, dpi=dpi, source_path=source)
+    def add_page(self, image: np.ndarray, dpi: int = 300, source: str = "", source_page: int = -1) -> PageData:
+        page = PageData(index=len(self._pages), original_image=image, dpi=dpi, source_path=source, source_page=source_page)
         self._pages.append(page)
         return page
 
@@ -77,6 +77,11 @@ class ScanModel:
         p = self.get(index)
         if p:
             p.bookmark = label
+
+    def set_comment(self, index: int, text: str):
+        p = self.get(index)
+        if p:
+            p.comment = text
 
     def reorder_to_sequence(self, indices_in_order: list[int]):
         if len(indices_in_order) != len(self._pages):

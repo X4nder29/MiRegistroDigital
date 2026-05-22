@@ -537,6 +537,7 @@ class ThumbnailCard(QFrame):
     fullscreen_requested = Signal(int)
     checked_toggled      = Signal(int, bool)
     bookmark_clicked     = Signal(int)
+    comment_clicked      = Signal(int)
 
     def __init__(self, index: int, image: np.ndarray, parent=None):
         super().__init__(parent)
@@ -665,6 +666,7 @@ class ThumbnailCard(QFrame):
     def _ctx_menu(self, pos):
         menu = QMenu(self)
         act_bm = menu.addAction("Añadir/quitar marcador…")
+        act_cm = menu.addAction("Añadir/quitar comentario…")
         menu.addSeparator()
         cut_lbl = "Quitar punto de corte" if self._is_cut else "Marcar como punto de corte"
         act_cut = menu.addAction(cut_lbl)
@@ -675,6 +677,8 @@ class ThumbnailCard(QFrame):
         action = menu.exec(self.mapToGlobal(pos))
         if action == act_bm:
             self.bookmark_clicked.emit(self.page_index)
+        elif action == act_cm:
+            self.comment_clicked.emit(self.page_index)
         elif action == act_cut:
             self.cut_toggled.emit(self.page_index)
         elif action == act_full:
@@ -703,6 +707,7 @@ class ThumbnailGrid(QScrollArea):
     fullscreen_requested = Signal(int)
     reorder_requested    = Signal(int, int)
     bookmark_requested   = Signal(int, str)
+    comment_requested    = Signal(int, str)
     checked_changed      = Signal(set)
 
     CARD_W = THUMB_W + 30
@@ -819,6 +824,7 @@ class ThumbnailGrid(QScrollArea):
         card.fullscreen_requested.connect(self.fullscreen_requested)
         card.checked_toggled.connect(self._on_checked_toggled)
         card.bookmark_clicked.connect(self._on_card_bookmark)
+        card.comment_clicked.connect(self._on_card_comment)
         self._cards.append(card)
         i = len(self._cards) - 1
         self._grid.addWidget(card, i // self._cols, i % self._cols)
@@ -832,6 +838,16 @@ class ThumbnailGrid(QScrollArea):
             self, "Marcador", "Nombre del marcador (vacío para quitar):", text=current)
         if ok:
             self.bookmark_requested.emit(index, text.strip())
+
+    def _on_card_comment(self, index: int):
+        from PySide6.QtWidgets import QInputDialog, QApplication
+        from models.scan_model import ScanModel
+        mw = QApplication.instance().activeWindow()
+        cur = mw._model.get(index).comment if mw and hasattr(mw, '_model') else ""
+        text, ok = QInputDialog.getMultiLineText(
+            self, "Comentario", "Comentario para esta página (vacío para quitar):", text=cur)
+        if ok:
+            self.comment_requested.emit(index, text.strip())
 
     def _on_checked_toggled(self, index: int, checked: bool):
         if checked:
