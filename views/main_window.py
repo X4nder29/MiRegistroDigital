@@ -834,6 +834,7 @@ class MainWindow(QMainWindow):
             return
         self._fullscreen_viewer = FullscreenViewer(pages, start=index, parent=self)
         self._fullscreen_viewer.bookmark_changed.connect(self._scan.set_bookmark)
+        self._fullscreen_viewer.comment_changed.connect(self._on_comment_set)
         self._fullscreen_viewer.show()
 
     def closeEvent(self, event):

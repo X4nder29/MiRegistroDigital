@@ -1,5 +1,6 @@
 """Widgets reutilizables."""
 from __future__ import annotations
+import cv2
 import numpy as np
 from PySide6.QtWidgets import (
     QLabel, QFrame, QWidget, QScrollArea, QGridLayout,
@@ -263,6 +264,7 @@ class ImageViewer(QLabel):
 
 class FullscreenViewer(QDialog):
     bookmark_changed = Signal(int, str)
+    comment_changed  = Signal(int, str)
 
     def __init__(self, pages_data: list, start: int = 0, parent=None):
         super().__init__(parent, Qt.Window)
@@ -271,6 +273,7 @@ class FullscreenViewer(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self._pages = pages_data
         self._idx   = start
+        self._dual_mode = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -301,10 +304,20 @@ class FullscreenViewer(QDialog):
         act_zoomfit.setToolTip("Ajustar (Ctrl+0)")
         act_zoomfit.triggered.connect(self._zoom_fit)
 
-        act_bookmark = QAction("Marcador", self)
-        act_bookmark.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_B))
-        act_bookmark.setToolTip("Añadir/editar marcador (Ctrl+B)")
-        act_bookmark.triggered.connect(self._edit_bookmark)
+        act_dual = QAction("Página doble", self)
+        act_dual.setCheckable(True)
+        act_dual.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_D))
+        act_dual.setToolTip("Ver dos páginas a la vez (Ctrl+D)")
+        act_dual.toggled.connect(self._toggle_dual)
+
+        act_comment = QAction("Comentario", self)
+        act_comment.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_M))
+        act_comment.setToolTip("Añadir/editar comentario (Ctrl+M)")
+        act_comment.triggered.connect(self._edit_comment)
+
+        act_bookmark_shortcut = QAction(self)
+        act_bookmark_shortcut.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_B))
+        act_bookmark_shortcut.triggered.connect(self._edit_bookmark)
 
         act_close = QAction("✕  Cerrar", self)
         act_close.setShortcut(QKeySequence(Qt.Key_Escape))
@@ -329,13 +342,15 @@ class FullscreenViewer(QDialog):
         tb.addAction(act_zoomout)
         tb.addAction(act_zoomfit)
         tb.addSeparator()
-        tb.addAction(act_bookmark)
+        tb.addAction(act_dual)
+        tb.addAction(act_comment)
         tb.addSeparator()
         tb.addAction(act_close)
         layout.addWidget(tb)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(False)
+        self._scroll.setAlignment(Qt.AlignCenter)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll.setStyleSheet("QScrollArea { border: none; }")
@@ -347,13 +362,56 @@ class FullscreenViewer(QDialog):
         layout.addWidget(self._scroll, 1)
         self._show_current()
 
+    def _toggle_dual(self, checked: bool):
+        self._dual_mode = checked
+        self._show_current()
+
     def _show_current(self):
-        if self._pages:
+        if not self._pages:
+            return
+        if self._dual_mode:
+            self._show_dual()
+        else:
             p = self._pages[self._idx]
             self._viewer.set_image(p.display_image)
             bm = p.bookmark
             self._bm_label.setText(f"  {bm}  " if bm else "  + Marcador  ")
-        self._page_label.setText(f"  Página {self._idx + 1} de {len(self._pages)}  ")
+        self._page_label.setText(
+            f"  Página(s) {self._idx + 1}–{min(self._idx + 2, len(self._pages))} de {len(self._pages)}  "
+            if self._dual_mode
+            else f"  Página {self._idx + 1} de {len(self._pages)}  ")
+
+    def _show_dual(self):
+        p1 = self._pages[self._idx]
+        img1 = p1.display_image
+        h1, w1 = img1.shape[:2]
+
+        if self._idx + 1 < len(self._pages):
+            p2 = self._pages[self._idx + 1]
+            img2 = p2.display_image
+            h2, w2 = img2.shape[:2]
+            target_h = max(h1, h2)
+            if h1 != target_h:
+                scale = target_h / h1
+                img1 = cv2.resize(img1, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            if h2 != target_h:
+                scale = target_h / h2
+                img2 = cv2.resize(img2, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            self._viewer.set_image(np.hstack([img1, img2]))
+            bm1 = p1.bookmark
+            bm2 = p2.bookmark
+            if bm1 and bm2:
+                self._bm_label.setText(f"  {bm1}  |  {bm2}  ")
+            elif bm1:
+                self._bm_label.setText(f"  {bm1}  ")
+            elif bm2:
+                self._bm_label.setText(f"  {bm2}  ")
+            else:
+                self._bm_label.setText("  + Marcador  ")
+        else:
+            self._viewer.set_image(img1)
+            bm = p1.bookmark
+            self._bm_label.setText(f"  {bm}  " if bm else "  + Marcador  ")
 
     def _edit_bookmark(self):
         p = self._pages[self._idx]
@@ -364,8 +422,19 @@ class FullscreenViewer(QDialog):
         if ok:
             label = text.strip()
             p.bookmark = label
-            self._bm_label.setText(f"  {label}  " if label else "  + Marcador  ")
+            self._show_current()
             self.bookmark_changed.emit(p.index, label)
+
+    def _edit_comment(self):
+        p = self._pages[self._idx]
+        text, ok = QInputDialog.getMultiLineText(
+            self, "Comentario",
+            "Comentario para esta página (vacío para quitar):",
+            text=p.comment)
+        if ok:
+            label = text.strip()
+            p.comment = label
+            self.comment_changed.emit(p.index, label)
 
     def _zoom_in(self):
         self._viewer.zoom_in()
@@ -378,12 +447,12 @@ class FullscreenViewer(QDialog):
 
     def _prev(self):
         if self._idx > 0:
-            self._idx -= 1
+            self._idx -= 2 if self._dual_mode else 1
             self._show_current()
 
     def _next(self):
         if self._idx < len(self._pages) - 1:
-            self._idx += 1
+            self._idx += 2 if self._dual_mode else 1
             self._show_current()
 
     def keyPressEvent(self, event):
