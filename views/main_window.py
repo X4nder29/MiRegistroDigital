@@ -485,7 +485,7 @@ class MainWindow(QMainWindow):
                         self.s.progress.emit(i + 1, len(self.pages))
                         img = item["image"]
                         h, w = img.shape[:2]
-                        _, buf = cv2.imencode('.png', img)
+                        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 92])
                         page = doc.new_page(width=w, height=h)
                         page.insert_image(page.rect, stream=buf.tobytes())
                     tocs = [[1, item["label"], i + 1] for i, item in enumerate(self.pages)]

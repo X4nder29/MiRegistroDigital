@@ -299,7 +299,7 @@ class ExportController(QObject):
                         self.s.progress.emit(self.job.id, i + 1, len(self.pages))
                         img = page.display_image
                         h, w = img.shape[:2]
-                        _, buf = cv2.imencode('.png', img)
+                        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 92])
                         p = doc.new_page(width=w, height=h)
                         p.insert_image(p.rect, stream=buf.tobytes())
                         if page.bookmark:
