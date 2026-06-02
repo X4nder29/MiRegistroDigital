@@ -19,7 +19,7 @@ logger = logging.getLogger("docscan.scan")
 
 class _ImportWorker(QRunnable):
     class S(QObject):
-        page     = Signal(np.ndarray, str, int)  # image, source_path, source_page
+        page     = Signal(np.ndarray, str, int, str, list)  # image, source, src_page, comment, bookmarks
         progress = Signal(int, int)
         done     = Signal()
         error    = Signal(str)
@@ -34,13 +34,14 @@ class _ImportWorker(QRunnable):
         self._stop = True
 
     @staticmethod
-    def _render_single_page(path: str, pdf_dpi: int, pg: int) -> Optional[np.ndarray]:
+    def _render_single_page(path: str, pdf_dpi: int, pg: int,
+                            annots_text: str = "") -> Optional[np.ndarray]:
         try:
             import fitz
             doc = fitz.open(path)
             try:
                 mat = fitz.Matrix(pdf_dpi / 72, pdf_dpi / 72)
-                pix = doc[pg].get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                pix = doc[pg].get_pixmap(matrix=mat, colorspace=fitz.csRGB, annots=False)
                 img = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)
                 return img[:, :, ::-1]
             finally:
@@ -54,6 +55,37 @@ class _ImportWorker(QRunnable):
             return np.array(imgs[0].convert("RGB"))[:, :, ::-1] if imgs else None
         except ImportError:
             raise RuntimeError("Instala pymupdf o pdf2image para importar PDFs.")
+
+    @staticmethod
+    def _extract_annots(path: str, pg: int) -> str:
+        try:
+            import fitz
+            doc = fitz.open(path)
+            try:
+                texts = []
+                for a in doc[pg].annots():
+                    if a.type[0] in (fitz.PDF_ANNOT_TEXT, fitz.PDF_ANNOT_FREE_TEXT):
+                        info = a.info
+                        t = info.get("content", "") or info.get("title", "")
+                        if t:
+                            texts.append(t.strip())
+                return "\n".join(texts)
+            finally:
+                doc.close()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _get_toc(path: str) -> list:
+        try:
+            import fitz
+            doc = fitz.open(path)
+            try:
+                return doc.get_toc()
+            finally:
+                doc.close()
+        except Exception:
+            return []
 
     def run(self):
         try:
@@ -71,16 +103,19 @@ class _ImportWorker(QRunnable):
                 self.s.done.emit()
                 return
 
-            buffer: dict[int, np.ndarray] = {}
+            buffer: dict[int, tuple[np.ndarray, str, list]] = {}
             next_expected = 0
             lock = threading.Lock()
+
+            pdf_toc_cache: dict[str, list] = {}
 
             def try_emit():
                 nonlocal next_expected
                 while next_expected in buffer:
-                    img = buffer.pop(next_expected)
+                    img, comment_text, bmarks = buffer.pop(next_expected)
                     path, pg = tasks[next_expected]
-                    self.s.page.emit(img, str(path), pg if pg is not None else -1)
+                    self.s.page.emit(img, str(path), pg if pg is not None else -1,
+                                     comment_text, bmarks)
                     self.s.progress.emit(next_expected + 1, total)
                     next_expected += 1
 
@@ -92,13 +127,18 @@ class _ImportWorker(QRunnable):
                         img = self._load_img(path)
                         if img is not None:
                             with lock:
-                                buffer[i] = img
+                                buffer[i] = (img, "", [])
                                 try_emit()
                     except Exception as e:
                         self.s.error.emit(f"{path.name}: {e}")
 
             pdf_tasks = [(i, str(path), pg) for i, (path, pg) in enumerate(tasks)
                          if pg is not None and not self._stop]
+
+            for _, p_str, _ in pdf_tasks:
+                if p_str not in pdf_toc_cache:
+                    pdf_toc_cache[p_str] = self._get_toc(p_str)
+
             if pdf_tasks:
                 max_workers = min(4, os.cpu_count() or 4)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -106,11 +146,15 @@ class _ImportWorker(QRunnable):
                         if self._stop:
                             return
                         try:
-                            img = self._render_single_page(path, self.pdf_dpi, pg)
+                            annot_text = self._extract_annots(path, pg)
+                            img = self._render_single_page(path, self.pdf_dpi, pg, annot_text)
                             if img is not None:
+                                toc = pdf_toc_cache.get(path, [])
+                                page_bmarks = [(level, title) for level, title, pnum in toc
+                                               if pnum == pg + 1]
                                 with lock:
                                     if not self._stop:
-                                        buffer[task_idx] = img
+                                        buffer[task_idx] = (img, annot_text, page_bmarks)
                                         try_emit()
                         except Exception as e:
                             self.s.error.emit(f"{Path(path).name} p.{pg + 1}: {e}")
@@ -153,7 +197,7 @@ class ScanController(QObject):
     error           = Signal(str)
     correction_done = Signal(int)
     order_changed    = Signal()
-    bookmark_updated = Signal(int, str)
+    bookmark_updated = Signal(int, list)
 
     def __init__(self, model: ScanModel, config: ConfigModel, parent=None):
         super().__init__(parent)
@@ -224,11 +268,11 @@ class ScanController(QObject):
         self._m.reorder_to_sequence(indices_in_order)
         self.order_changed.emit()
 
-    @Slot(int, str)
-    def set_bookmark(self, index: int, label: str):
-        logger.info("Bookmark página %d: %s", index, label or "(sin)")
-        self._m.set_bookmark(index, label)
-        self.bookmark_updated.emit(index, label)
+    @Slot(int, list)
+    def set_bookmark(self, index: int, labels: list):
+        logger.info("Bookmark página %d: %s", index, labels[0][1] if labels else "(sin)")
+        self._m.set_bookmark(index, labels)
+        self.bookmark_updated.emit(index, labels)
 
     @Slot(int)
     def reset_correction(self, index: int):
@@ -236,11 +280,16 @@ class ScanController(QObject):
         self._m.set_corrected(index, None, 0.0)
         self.correction_done.emit(index)
 
-    @Slot(np.ndarray, str, int)
-    def _on_page_src(self, image: np.ndarray, src: str, src_page: int = -1):
-        self._process_and_add(image, src, src_page)
+    @Slot(np.ndarray, str, int, str, list)
+    def _on_page_src(self, image: np.ndarray, src: str, src_page: int,
+                     comment: str = "", bookmarks: list = []):
+        self._process_and_add(image, src, src_page, comment, bookmarks)
 
-    def _process_and_add(self, image: np.ndarray, src: str, src_page: int = -1):
-        page = self._m.add_page(image, 300, src, source_page=src_page)
-        logger.debug("Página añadida al modelo: index=%d, src=%s", page.index, src)
+    def _process_and_add(self, image: np.ndarray, src: str, src_page: int = -1,
+                         comment: str = "", bookmarks: list | None = None):
+        bmarks = bookmarks or []
+        page = self._m.add_page(image, 300, src, source_page=src_page,
+                                comment=comment, bookmarks=bmarks)
+        logger.debug("Página añadida al modelo: index=%d, src=%s, comment=%s, bookmarks=%d",
+                     page.index, src, comment[:30] if comment else "", len(bmarks))
         self.page_added.emit(page)

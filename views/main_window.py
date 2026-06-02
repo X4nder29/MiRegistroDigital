@@ -423,11 +423,14 @@ class MainWindow(QMainWindow):
             })
         self._civil_sect.bookmarks_page.set_pages_data(pages_data)
 
-    @Slot(int, str)
-    def _on_bookmark_updated(self, index: int, label: str):
-        self._imp_page.set_bookmark(index, label)
-        self._civil_sect.civil_page.set_bookmark(index, label)
-        self._ant_page.set_bookmark(index, label)
+    @Slot(int, list)
+    def _on_bookmark_updated(self, index: int, labels: list):
+        first = labels[0][1] if labels else ""
+        n = len(labels)
+        display = f"{first} 📑{n}" if n > 1 else first
+        self._imp_page.set_bookmark(index, display)
+        self._civil_sect.civil_page.set_bookmark(index, display)
+        self._ant_page.set_bookmark(index, display)
 
     @Slot()
     def _on_order_changed(self):

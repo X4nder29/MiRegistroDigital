@@ -112,7 +112,8 @@ class _BookmarkWorker(QRunnable):
                     self.s.cancelled.emit(self.job.id)
                     return
                 self.s.progress.emit(self.job.id, i + 1, len(self.pages))
-                base = sanitize(page.bookmark or page.final_label)
+                bm = ExportController._get_bookmark_label(page)
+                base = sanitize(bm or page.final_label)
                 if base in used:
                     used[base] += 1
                     base = f"{base}_{used[base]}"
@@ -154,7 +155,8 @@ class _AntBookmarkWorker(QRunnable):
                     return
                 self.s.progress.emit(self.job.id, i + 1, len(self.groups))
                 if self.use_bookmark:
-                    base = sanitize(group[0].bookmark or f"grupo_{i+1:04d}")
+                    bm = ExportController._get_bookmark_label(group[0])
+                    base = sanitize(bm or f"grupo_{i+1:04d}")
                 else:
                     base = f"grupo_{i+1:04d}"
                 if base in used:
@@ -302,8 +304,10 @@ class ExportController(QObject):
                         _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 92])
                         p = doc.new_page(width=w, height=h)
                         p.insert_image(p.rect, stream=buf.tobytes())
-                        if page.bookmark:
-                            tocs.append([1, page.bookmark, i + 1])
+                        bm = page.bookmarks if page.bookmarks else ([page.bookmark] if page.bookmark else [])
+                        if bm:
+                            for lvl, title in bm:
+                                tocs.append([lvl, title, i + 1])
                     if tocs:
                         doc.set_toc(tocs)
                     doc.save(self.out, garbage=4, deflate=True)
@@ -462,8 +466,10 @@ class ExportController(QObject):
                                     fill_color=(0, 0, 0),
                                     border_width=0,
                                 )
-                            if page.bookmark:
-                                tocs.append([1, page.bookmark, i + 1])
+                            bm = page.bookmarks if page.bookmarks else ([page.bookmark] if page.bookmark else [])
+                            if bm:
+                                for lvl, title in bm:
+                                    tocs.append([lvl, title, i + 1])
                         src.close()
                     else:
                         import cv2
@@ -476,8 +482,10 @@ class ExportController(QObject):
                             _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
                             p = doc.new_page(width=img.shape[1], height=img.shape[0])
                             p.insert_image(p.rect, stream=buf.tobytes())
-                            if page.bookmark:
-                                tocs.append([1, page.bookmark, i + 1])
+                            bm = page.bookmarks if page.bookmarks else ([page.bookmark] if page.bookmark else [])
+                            if bm:
+                                for lvl, title in bm:
+                                    tocs.append([lvl, title, i + 1])
 
                     if tocs:
                         doc.set_toc(tocs)
@@ -501,7 +509,8 @@ class ExportController(QObject):
             return []
         groups, cur = [], []
         for p in pages:
-            if p.bookmark and cur:
+            has_bm = bool(p.bookmarks) or bool(p.bookmark)
+            if has_bm and cur:
                 groups.append(cur)
                 cur = [p]
             else:
@@ -509,3 +518,9 @@ class ExportController(QObject):
         if cur:
             groups.append(cur)
         return groups
+
+    @staticmethod
+    def _get_bookmark_label(p: PageData) -> str:
+        if p.bookmarks:
+            return p.bookmarks[0][1]
+        return p.bookmark

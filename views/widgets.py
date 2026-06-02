@@ -6,7 +6,8 @@ from PySide6.QtWidgets import (
     QLabel, QFrame, QWidget, QScrollArea, QGridLayout,
     QVBoxLayout, QHBoxLayout, QSizePolicy, QPushButton,
     QMenu, QToolBar, QRubberBand, QCheckBox, QApplication,
-    QInputDialog, QDialog, QProgressBar,
+    QInputDialog, QDialog, QProgressBar, QListWidget, QListWidgetItem,
+    QPlainTextEdit, QLineEdit, QSpinBox, QDialogButtonBox,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint, QMimeData, QEvent, QTimer
 from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter, QWheelEvent, QDesktopServices
@@ -262,8 +263,188 @@ class ImageViewer(QLabel):
         self._update_debug_band()
 
 
+class BookmarkDialog(QDialog):
+    def __init__(self, parent, page_index: int, current: list[tuple[int, str]]):
+        super().__init__(parent)
+        self.setWindowTitle(f"Marcadores — Página {page_index + 1}")
+        self.setMinimumSize(420, 320)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+
+        self._list = QListWidget()
+        self._list.setDragDropMode(QListWidget.InternalMove)
+        self._list.setDefaultDropAction(Qt.MoveAction)
+        self._list.setStyleSheet(
+            f"QListWidget {{ background:{SURFACE2}; border:1px solid {BORDER}; "
+            f"border-radius:6px; padding:4px; }}"
+            f"QListWidget::item {{ padding:6px 10px; border-radius:4px; }}"
+            f"QListWidget::item:selected {{ background:{SURFACE3}; }}"
+        )
+        layout.addWidget(QLabel("Arrastra para reordenar:"))
+        layout.addWidget(self._list, 1)
+
+        for level, title in current:
+            item = QListWidgetItem(self._format_item(level, title))
+            item.setData(Qt.UserRole, (level, title))
+            self._list.addItem(item)
+
+        btn_layout = QHBoxLayout()
+        btn_add = QPushButton("➕ Añadir")
+        btn_add.setFixedHeight(30)
+        btn_add.clicked.connect(self._add)
+        btn_edit = QPushButton("✏️ Editar")
+        btn_edit.setFixedHeight(30)
+        btn_edit.clicked.connect(self._edit)
+        btn_remove = QPushButton("🗑️ Quitar")
+        btn_remove.setFixedHeight(30)
+        btn_remove.clicked.connect(self._remove)
+        btn_layout.addWidget(btn_add)
+        btn_layout.addWidget(btn_edit)
+        btn_layout.addWidget(btn_remove)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _format_item(level: int, title: str) -> str:
+        prefix = "├─ " * (level - 1) + "• " if level > 1 else ""
+        return f"{prefix}{title}"
+
+    def _add(self):
+        dlg = _BookmarkItemDialog(self, titulo="", nivel=1)
+        if dlg.exec() == QDialog.Accepted:
+            level, title = dlg.get_values()
+            item = QListWidgetItem(self._format_item(level, title))
+            item.setData(Qt.UserRole, (level, title))
+            self._list.addItem(item)
+
+    def _edit(self):
+        item = self._list.currentItem()
+        if not item:
+            return
+        level, title = item.data(Qt.UserRole)
+        dlg = _BookmarkItemDialog(self, titulo=title, nivel=level)
+        if dlg.exec() == QDialog.Accepted:
+            level, title = dlg.get_values()
+            item.setText(self._format_item(level, title))
+            item.setData(Qt.UserRole, (level, title))
+
+    def _remove(self):
+        item = self._list.currentItem()
+        if item:
+            self._list.takeItem(self._list.row(item))
+
+    def get_bookmarks(self) -> list[tuple[int, str]]:
+        result = []
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            result.append(item.data(Qt.UserRole))
+        return result
+
+
+class _BookmarkItemDialog(QDialog):
+    def __init__(self, parent, titulo: str = "", nivel: int = 1):
+        super().__init__(parent)
+        self.setWindowTitle("Marcador")
+        self.setMinimumWidth(300)
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Nivel:"))
+        self._level = QSpinBox()
+        self._level.setRange(1, 9)
+        self._level.setValue(nivel)
+        layout.addWidget(self._level)
+
+        layout.addWidget(QLabel("Título:"))
+        self._title = QLineEdit(titulo)
+        layout.addWidget(self._title)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_values(self) -> tuple[int, str]:
+        return self._level.value(), self._title.text().strip()
+
+
+class CommentDialog(QDialog):
+    def __init__(self, parent, page_index: int, current: str, image=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Comentario — Página {page_index + 1}")
+        self.setMinimumSize(400, 350)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+
+        self._editor = QPlainTextEdit(current)
+        self._editor.setPlaceholderText("Escribe un comentario para esta página…")
+        self._editor.setFixedHeight(120)
+        layout.addWidget(self._editor)
+
+        self._char_counter = QLabel(f"Caracteres: {len(current)}/500")
+        self._char_counter.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none;")
+        layout.addWidget(self._char_counter)
+        self._editor.textChanged.connect(self._on_text_changed)
+
+        self._preview_check = QCheckBox("Mostrar vista previa")
+        self._preview_check.toggled.connect(self._toggle_preview)
+        layout.addWidget(self._preview_check)
+
+        self._preview_lbl = QLabel()
+        self._preview_lbl.setFixedHeight(120)
+        self._preview_lbl.setAlignment(Qt.AlignCenter)
+        self._preview_lbl.setStyleSheet(
+            f"background:{SURFACE2}; border:1px solid {BORDER}; border-radius:6px;")
+        self._preview_lbl.setVisible(False)
+        layout.addWidget(self._preview_lbl)
+
+        self._image = image
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_text_changed(self):
+        text = self._editor.toPlainText()
+        if len(text) > 500:
+            self._editor.blockSignals(True)
+            self._editor.setPlainText(text[:500])
+            self._editor.moveCursor(self._editor.textCursor().End)
+            self._editor.blockSignals(False)
+            text = text[:500]
+        self._char_counter.setText(f"Caracteres: {len(text)}/500")
+        if self._preview_check.isChecked() and self._image is not None:
+            self._render_preview(text)
+
+    def _toggle_preview(self, checked: bool):
+        if checked and self._image is not None:
+            self._render_preview(self._editor.toPlainText())
+        self._preview_lbl.setVisible(checked)
+
+    def _render_preview(self, text: str):
+        from utils.image_utils import overlay_comment
+        img = overlay_comment(self._image, text)
+        h, w = img.shape[:2]
+        scale = min(380 / w, 110 / h, 1.0)
+        if scale < 1.0:
+            import cv2
+            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        px = ndarray_to_qpixmap(img)
+        self._preview_lbl.setPixmap(px)
+
+    def get_comment(self) -> str:
+        return self._editor.toPlainText().strip()
+
+
 class FullscreenViewer(QDialog):
-    bookmark_changed = Signal(int, str)
+    bookmark_changed = Signal(int, list)
     comment_changed  = Signal(int, str)
 
     def __init__(self, pages_data: list, start: int = 0, parent=None):
@@ -317,7 +498,8 @@ class FullscreenViewer(QDialog):
 
         act_bookmark_shortcut = QAction(self)
         act_bookmark_shortcut.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_B))
-        act_bookmark_shortcut.triggered.connect(self._edit_bookmark)
+        act_bookmark_shortcut.triggered.connect(self._quick_bookmark)
+        self.addAction(act_bookmark_shortcut)
 
         act_close = QAction("✕  Cerrar", self)
         act_close.setShortcut(QKeySequence(Qt.Key_Escape))
@@ -330,6 +512,23 @@ class FullscreenViewer(QDialog):
             f"color:{INFO}; border:1px solid {BORDER}; border-radius:4px; "
             f"padding:2px 8px; font-size:9pt;")
         self._bm_label.mousePressEvent = lambda e: self._edit_bookmark()
+
+        self._comment_indicator = QLabel()
+        self._comment_indicator.setStyleSheet(
+            f"color:{INFO}; border:1px solid {BORDER}; border-radius:4px; "
+            f"padding:2px 8px; font-size:9pt;")
+        self._comment_indicator.setCursor(Qt.PointingHandCursor)
+        self._comment_indicator.mousePressEvent = lambda e: self._edit_comment()
+
+        self._comment_nav_prev = QPushButton("◀")
+        self._comment_nav_prev.setFixedHeight(26)
+        self._comment_nav_prev.setToolTip("Página anterior con comentario")
+        self._comment_nav_prev.clicked.connect(self._prev_comment)
+
+        self._comment_nav_next = QPushButton("▶")
+        self._comment_nav_next.setFixedHeight(26)
+        self._comment_nav_next.setToolTip("Siguiente página con comentario")
+        self._comment_nav_next.clicked.connect(self._next_comment)
 
         tb.addAction(act_prev)
         tb.addAction(act_next)
@@ -344,6 +543,10 @@ class FullscreenViewer(QDialog):
         tb.addSeparator()
         tb.addAction(act_dual)
         tb.addAction(act_comment)
+        tb.addSeparator()
+        tb.addWidget(self._comment_indicator)
+        tb.addWidget(self._comment_nav_prev)
+        tb.addWidget(self._comment_nav_next)
         tb.addSeparator()
         tb.addAction(act_close)
         layout.addWidget(tb)
@@ -374,12 +577,34 @@ class FullscreenViewer(QDialog):
         else:
             p = self._pages[self._idx]
             self._viewer.set_image(p.display_image)
-            bm = p.bookmark
-            self._bm_label.setText(f"  {bm}  " if bm else "  + Marcador  ")
+            self._update_bm_label(p)
         self._page_label.setText(
             f"  Página(s) {self._idx + 1}–{min(self._idx + 2, len(self._pages))} de {len(self._pages)}  "
             if self._dual_mode
             else f"  Página {self._idx + 1} de {len(self._pages)}  ")
+        self._update_comment_indicator()
+
+    def _update_bm_label(self, p):
+        if p.bookmarks:
+            first = p.bookmarks[0][1]
+            n = len(p.bookmarks)
+            suffix = f" 📑{n}" if n > 1 else ""
+            tip = "\n".join(f"{'  '*(l-1)}Nivel {l}: {t}" for l, t in p.bookmarks)
+            self._bm_label.setText(f"  {first}{suffix}  ")
+            self._bm_label.setToolTip(tip)
+        elif p.bookmark:
+            self._bm_label.setText(f"  {p.bookmark}  ")
+            self._bm_label.setToolTip("")
+        else:
+            self._bm_label.setText("  + Marcador  ")
+            self._bm_label.setToolTip("")
+
+    def _update_comment_indicator(self):
+        total = len(self._pages)
+        comments_count = sum(1 for p in self._pages if p.comment)
+        has_comment = bool(self._pages[self._idx].comment)
+        icon = "💬" if has_comment else "   "
+        self._comment_indicator.setText(f"{icon} C: {comments_count}/{total}")
 
     def _show_dual(self):
         p1 = self._pages[self._idx]
@@ -398,8 +623,8 @@ class FullscreenViewer(QDialog):
                 scale = target_h / h2
                 img2 = cv2.resize(img2, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             self._viewer.set_image(np.hstack([img1, img2]))
-            bm1 = p1.bookmark
-            bm2 = p2.bookmark
+            bm1 = p1.bookmarks[0][1] if p1.bookmarks else p1.bookmark
+            bm2 = p2.bookmarks[0][1] if p2.bookmarks else p2.bookmark
             if bm1 and bm2:
                 self._bm_label.setText(f"  {bm1}  |  {bm2}  ")
             elif bm1:
@@ -410,31 +635,55 @@ class FullscreenViewer(QDialog):
                 self._bm_label.setText("  + Marcador  ")
         else:
             self._viewer.set_image(img1)
-            bm = p1.bookmark
-            self._bm_label.setText(f"  {bm}  " if bm else "  + Marcador  ")
+            self._update_bm_label(p1)
 
-    def _edit_bookmark(self):
+    def _quick_bookmark(self):
         p = self._pages[self._idx]
         text, ok = QInputDialog.getText(
-            self, "Marcador",
-            "Nombre del marcador (vacío para quitar):",
+            self, "Marcador rápido",
+            "Nombre del marcador (nivel 1):",
             text=p.bookmark)
         if ok:
             label = text.strip()
+            labels = [(1, label)] if label else []
+            p.bookmarks = labels
             p.bookmark = label
             self._show_current()
-            self.bookmark_changed.emit(p.index, label)
+            self.bookmark_changed.emit(p.index, labels)
+
+    def _edit_bookmark(self):
+        p = self._pages[self._idx]
+        current = p.bookmarks if p.bookmarks else ([(1, p.bookmark)] if p.bookmark else [])
+        dlg = BookmarkDialog(self, self._idx, current)
+        if dlg.exec() == QDialog.Accepted:
+            labels = dlg.get_bookmarks()
+            p.bookmarks = labels
+            p.bookmark = labels[0][1] if labels else ""
+            self._show_current()
+            self.bookmark_changed.emit(p.index, labels)
 
     def _edit_comment(self):
         p = self._pages[self._idx]
-        text, ok = QInputDialog.getMultiLineText(
-            self, "Comentario",
-            "Comentario para esta página (vacío para quitar):",
-            text=p.comment)
-        if ok:
-            label = text.strip()
-            p.comment = label
-            self.comment_changed.emit(p.index, label)
+        dlg = CommentDialog(self, self._idx, p.comment, p.display_image)
+        if dlg.exec() == QDialog.Accepted:
+            text = dlg.get_comment()
+            p.comment = text
+            self._show_current()
+            self.comment_changed.emit(p.index, text)
+
+    def _prev_comment(self):
+        for i in range(self._idx - 1, -1, -1):
+            if self._pages[i].comment:
+                self._idx = i
+                self._show_current()
+                return
+
+    def _next_comment(self):
+        for i in range(self._idx + 1, len(self._pages)):
+            if self._pages[i].comment:
+                self._idx = i
+                self._show_current()
+                return
 
     def _zoom_in(self):
         self._viewer.zoom_in()
@@ -682,6 +931,13 @@ class ThumbnailCard(QFrame):
         else:
             self._bookmark_lbl.hide()
 
+    def set_comment(self, text: str):
+        if text:
+            preview = text[:40] + "…" if len(text) > 40 else text
+            self._num.setToolTip(f"💬 Comentario: {preview}")
+        else:
+            self._num.setToolTip("")
+
     def set_image(self, image: np.ndarray):
         h, w = image.shape[:2]
         if w > THUMB_W or h > THUMB_H:
@@ -775,7 +1031,7 @@ class ThumbnailGrid(QScrollArea):
     page_deleted         = Signal(int)
     fullscreen_requested = Signal(int)
     reorder_requested    = Signal(int, int)
-    bookmark_requested   = Signal(int, str)
+    bookmark_requested   = Signal(int, list)
     comment_requested    = Signal(int, str)
     checked_changed      = Signal(set)
 
@@ -901,22 +1157,32 @@ class ThumbnailGrid(QScrollArea):
         return card
 
     def _on_card_bookmark(self, index: int):
-        card = self._card(index)
-        current = card._bookmark_lbl.text() if card and card._bookmark_lbl.isVisible() else ""
-        text, ok = QInputDialog.getText(
-            self, "Marcador", "Nombre del marcador (vacío para quitar):", text=current)
-        if ok:
-            self.bookmark_requested.emit(index, text.strip())
+        from PySide6.QtWidgets import QApplication
+        mw = QApplication.instance().activeWindow()
+        if mw and hasattr(mw, '_model'):
+            p = mw._model.get(index)
+            current = p.bookmarks if p and p.bookmarks else []
+        else:
+            current = []
+        dlg = BookmarkDialog(self, index, current)
+        if dlg.exec() == QDialog.Accepted:
+            labels = dlg.get_bookmarks()
+            self.bookmark_requested.emit(index, labels)
 
     def _on_card_comment(self, index: int):
-        from PySide6.QtWidgets import QInputDialog, QApplication
-        from models.scan_model import ScanModel
+        from PySide6.QtWidgets import QApplication
         mw = QApplication.instance().activeWindow()
-        cur = mw._model.get(index).comment if mw and hasattr(mw, '_model') else ""
-        text, ok = QInputDialog.getMultiLineText(
-            self, "Comentario", "Comentario para esta página (vacío para quitar):", text=cur)
-        if ok:
-            self.comment_requested.emit(index, text.strip())
+        image = None
+        cur = ""
+        if mw and hasattr(mw, '_model'):
+            p = mw._model.get(index)
+            if p:
+                cur = p.comment
+                image = p.display_image
+        dlg = CommentDialog(self, index, cur, image)
+        if dlg.exec() == QDialog.Accepted:
+            text = dlg.get_comment()
+            self.comment_requested.emit(index, text)
 
     def _on_checked_toggled(self, index: int, checked: bool):
         if checked:
@@ -959,6 +1225,14 @@ class ThumbnailGrid(QScrollArea):
         c = self._card(index)
         if c:
             c.set_bookmark(label)
+
+    def set_bookmarks(self, index: int, labels: list[tuple[int, str]]):
+        c = self._card(index)
+        if c:
+            first = labels[0][1] if labels else ""
+            n = len(labels)
+            display = f"{first} 📑{n}" if n > 1 else first
+            c.set_bookmark(display)
 
     def reorder_cards(self, from_idx: int, to_idx: int):
         if from_idx == to_idx:

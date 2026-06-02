@@ -13,6 +13,7 @@ class PageData:
     serial_confidence: float = 0.0
     user_label: Optional[str] = None
     bookmark: str = ""
+    bookmarks: list[tuple[int, str]] = field(default_factory=list)
     comment: str = ""
     is_cut_point: bool = False
     rotation_angle: float = 0.0

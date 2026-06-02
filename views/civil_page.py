@@ -26,11 +26,11 @@ class CivilPage(QWidget):
     parallel_workers_changed = Signal(int)
     page_reordered           = Signal(int, int)
     page_reordered_seq       = Signal(list)
-    bookmark_set              = Signal(int, str)
+    bookmark_set              = Signal(int, list)
     comment_set               = Signal(int, str)
     export_original_pdf_requested = Signal(str)
  
-    COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS, COL_BOOKMARK = 0, 1, 2, 3, 4
+    COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS, COL_BOOKMARK, COL_COMMENT = 0, 1, 2, 3, 4, 5
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -83,13 +83,14 @@ class CivilPage(QWidget):
         lv.setContentsMargins(0, 0, 0, 0)
         lv.setSpacing(0)
 
-        self._table = QTableWidget(0, 5)
-        self._table.setHorizontalHeaderLabels(["Página", "Serial OCR", "Confianza", "Estado", "Marcador"])
+        self._table = QTableWidget(0, 6)
+        self._table.setHorizontalHeaderLabels(["Página", "Serial OCR", "Confianza", "Estado", "Marcador", "Comentario"])
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self._table.setColumnWidth(0, 70)
         self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
         self._table.setColumnWidth(4, 120)
+        self._table.setColumnWidth(5, 100)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
         self._table.verticalHeader().setVisible(False)
@@ -268,31 +269,47 @@ class CivilPage(QWidget):
         menu.addSeparator()
         action = menu.exec(self._table.mapToGlobal(pos))
         if action == act_bm:
-            current = self._table.item(row, self.COL_BOOKMARK)
-            cur_text = current.text() if current and current.text() not in ("", "—") else ""
-            text, ok = QInputDialog.getText(
-                self, "Marcador",
-                "Nombre del marcador (vacío para quitar):",
-                text=cur_text)
-            if ok:
-                self._table.blockSignals(True)
-                if self._table.item(row, self.COL_BOOKMARK):
-                    self._table.item(row, self.COL_BOOKMARK).setText(text.strip())
-                self._table.blockSignals(False)
-                self.bookmark_set.emit(idx, text.strip())
-        elif action == act_cm:
-            from models.scan_model import ScanModel
             from PySide6.QtWidgets import QApplication
+            from views.widgets import BookmarkDialog
             mw = QApplication.instance().activeWindow()
-            cur_comment = mw._model.get(idx).comment if mw and hasattr(mw, '_model') else ""
-            text, ok = QInputDialog.getMultiLineText(
-                self, "Comentario",
-                "Comentario para esta página (vacío para quitar):",
-                text=cur_comment)
-            if ok:
-                self.comment_set.emit(idx, text.strip())
+            cur = []
+            if mw and hasattr(mw, '_model'):
+                p = mw._model.get(idx)
+                cur = p.bookmarks if p and p.bookmarks else []
+            dlg = BookmarkDialog(self, idx, cur)
+            if dlg.exec() == QDialog.Accepted:
+                labels = dlg.get_bookmarks()
+                self._table.blockSignals(True)
+                first = labels[0][1] if labels else ""
+                n = len(labels)
+                display = f"{first} 📑{n}" if n > 1 else first
+                if self._table.item(row, self.COL_BOOKMARK):
+                    self._table.item(row, self.COL_BOOKMARK).setText(display)
+                self._table.blockSignals(False)
+                self.bookmark_set.emit(idx, labels)
+        elif action == act_cm:
+            from PySide6.QtWidgets import QApplication
+            from views.widgets import CommentDialog
+            mw = QApplication.instance().activeWindow()
+            image = None
+            cur_comment = ""
+            if mw and hasattr(mw, '_model'):
+                p = mw._model.get(idx)
+                if p:
+                    cur_comment = p.comment
+                    image = p.display_image
+            dlg = CommentDialog(self, idx, cur_comment, image)
+            if dlg.exec() == QDialog.Accepted:
+                text = dlg.get_comment()
+                self._table.blockSignals(True)
+                if self._table.item(row, self.COL_COMMENT):
+                    preview = text[:40] + "…" if len(text) > 40 else text
+                    self._table.item(row, self.COL_COMMENT).setToolTip(text if text else "")
+                    self._table.item(row, self.COL_COMMENT).setText(preview if text else "—")
+                self._table.blockSignals(False)
+                self.comment_set.emit(idx, text)
 
-    def add_page(self, index: int, image: np.ndarray | None = None, bookmark: str = ""):
+    def add_page(self, index: int, image: np.ndarray | None = None, bookmark: str = "", comment: str = ""):
         self._table.blockSignals(True)
         row = self._table.rowCount()
         self._table.insertRow(row)
@@ -319,11 +336,19 @@ class CivilPage(QWidget):
         if bookmark:
             b.setForeground(QColor(INFO))
 
+        cm = QTableWidgetItem(comment[:40] + "…" if len(comment) > 40 else (comment if comment else "—"))
+        cm.setTextAlignment(Qt.AlignCenter)
+        cm.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        if comment:
+            cm.setToolTip(comment)
+            cm.setForeground(QColor(SUCCESS))
+
         self._table.setItem(row, 0, n)
         self._table.setItem(row, 1, s)
         self._table.setItem(row, 2, c)
         self._table.setItem(row, 3, e)
         self._table.setItem(row, 4, b)
+        self._table.setItem(row, 5, cm)
         self._table.blockSignals(False)
         self._refresh_summary()
 
@@ -341,10 +366,32 @@ class CivilPage(QWidget):
                 item.setForeground(QColor(INFO) if label else QColor(TEXT_DIM))
         self._table.blockSignals(False)
 
+    def set_bookmarks(self, page_index: int, labels: list[tuple[int, str]]):
+        self._table.blockSignals(True)
+        row = self._row_for(page_index)
+        if row >= 0:
+            item = self._table.item(row, self.COL_BOOKMARK)
+            if item:
+                first = labels[0][1] if labels else ""
+                n = len(labels)
+                display = f"{first} 📑{n}" if n > 1 else first
+                item.setText(display)
+                item.setForeground(QColor(INFO) if display else QColor(TEXT_DIM))
+                item.setToolTip("\n".join(f"{'  '*(l-1)}Nivel {l}: {t}" for l, t in labels) if labels else "")
+        self._table.blockSignals(False)
+
     def rebuild(self, pages_data: list):
         self.clear()
         for pd in pages_data:
-            self.add_page(pd.index, pd.display_image, pd.bookmark)
+            bm_display = ""
+            if pd.bookmarks:
+                first = pd.bookmarks[0][1] if pd.bookmarks else ""
+                n = len(pd.bookmarks)
+                bm_display = f"{first} 📑{n}" if n > 1 else first
+            elif pd.bookmark:
+                bm_display = pd.bookmark
+            comment_display = pd.comment[:40] + "…" if len(pd.comment) > 40 else pd.comment
+            self.add_page(pd.index, pd.display_image, bm_display, comment_display)
             if pd.serial:
                 self.set_ocr_result(pd.index, pd.serial, pd.serial_confidence)
 
@@ -414,7 +461,16 @@ class CivilPage(QWidget):
         self._btn_export_bm.setText("  Exportar por marcador")
 
     def set_comment(self, page_index: int, text: str):
-        pass  # no table column for comment
+        self._table.blockSignals(True)
+        row = self._row_for(page_index)
+        if row >= 0:
+            item = self._table.item(row, self.COL_COMMENT)
+            if item:
+                preview = text[:40] + "…" if len(text) > 40 else text
+                item.setText(preview if text else "—")
+                item.setToolTip(text if text else "")
+                item.setForeground(QColor(SUCCESS) if text else QColor(TEXT_DIM))
+        self._table.blockSignals(False)
 
     def export_original_started(self):
         self._btn_export_orig.setEnabled(False)

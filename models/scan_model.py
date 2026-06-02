@@ -16,8 +16,15 @@ class ScanModel:
     def count(self) -> int:
         return len(self._pages)
 
-    def add_page(self, image: np.ndarray, dpi: int = 300, source: str = "", source_page: int = -1) -> PageData:
-        page = PageData(index=len(self._pages), original_image=image, dpi=dpi, source_path=source, source_page=source_page)
+    def add_page(self, image: np.ndarray, dpi: int = 300, source: str = "",
+                 source_page: int = -1, comment: str = "",
+                 bookmarks: list[tuple[int, str]] | None = None) -> PageData:
+        page = PageData(
+            index=len(self._pages), original_image=image, dpi=dpi,
+            source_path=source, source_page=source_page,
+            comment=comment, bookmarks=bookmarks or [])
+        if bookmarks:
+            page.bookmark = bookmarks[0][1] if bookmarks else ""
         self._pages.append(page)
         return page
 
@@ -73,10 +80,11 @@ class ScanModel:
         for i, p in enumerate(self._pages):
             p.index = i
 
-    def set_bookmark(self, index: int, label: str):
+    def set_bookmark(self, index: int, labels: list[tuple[int, str]]):
         p = self.get(index)
         if p:
-            p.bookmark = label
+            p.bookmarks = list(labels)
+            p.bookmark = labels[0][1] if labels else ""
 
     def set_comment(self, index: int, text: str):
         p = self.get(index)

@@ -24,7 +24,7 @@ class ScanPage(QWidget):
     rotation_changed       = Signal(int, float)
     reset_correction       = Signal(int)
     page_reordered         = Signal(int, int)
-    bookmark_set           = Signal(int, str)
+    bookmark_set           = Signal(int, list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,6 +149,9 @@ class ScanPage(QWidget):
     def set_bookmark(self, index: int, label: str):
         self.grid.set_bookmark(index, label)
 
+    def set_bookmarks(self, index: int, labels: list[tuple[int, str]]):
+        self.grid.set_bookmarks(index, labels)
+
     def reorder_cards(self, from_idx: int, to_idx: int):
         self.grid.reorder_cards(from_idx, to_idx)
         if self._current == from_idx:
@@ -163,7 +166,12 @@ class ScanPage(QWidget):
                 c.set_serial(pd.serial, pd.serial_confidence)
             if pd.is_cut_point:
                 c.set_cut_point(True)
-            if pd.bookmark:
+            if pd.bookmarks:
+                first = pd.bookmarks[0][1] if pd.bookmarks else ""
+                n = len(pd.bookmarks)
+                display = f"{first} 📑{n}" if n > 1 else first
+                c.set_bookmark(display)
+            elif pd.bookmark:
                 c.set_bookmark(pd.bookmark)
         self._update_status()
         self.grid.blockSignals(False)

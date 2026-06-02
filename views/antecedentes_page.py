@@ -20,7 +20,7 @@ class AntecedentesPage(QWidget):
     fullscreen_requested = Signal(int)
     page_deleted         = Signal(int)
     page_reordered       = Signal(int, int)
-    bookmark_set              = Signal(int, str)
+    bookmark_set              = Signal(int, list)
     comment_set               = Signal(int, str)
     export_original_pdf_requested = Signal(str)
 
@@ -200,6 +200,9 @@ class AntecedentesPage(QWidget):
     def set_bookmark(self, index: int, label: str):
         self.grid.set_bookmark(index, label)
 
+    def set_bookmarks(self, index: int, labels: list[tuple[int, str]]):
+        self.grid.set_bookmarks(index, labels)
+
     def reorder_cards(self, from_idx: int, to_idx: int):
         self.grid.reorder_cards(from_idx, to_idx)
 
@@ -212,8 +215,16 @@ class AntecedentesPage(QWidget):
                 c.set_serial(pd.serial, pd.serial_confidence)
             if pd.is_cut_point:
                 c.set_cut_point(True)
-            if pd.bookmark:
+            if pd.bookmarks:
+                first = pd.bookmarks[0][1] if pd.bookmarks else ""
+                n = len(pd.bookmarks)
+                display = f"{first} 📑{n}" if n > 1 else first
+                c.set_bookmark(display)
+            elif pd.bookmark:
                 c.set_bookmark(pd.bookmark)
+            if pd.comment:
+                preview = pd.comment[:40] + "…" if len(pd.comment) > 40 else pd.comment
+                c.set_comment(preview)
         self.grid.blockSignals(False)
 
     def remove_page(self, index: int):
