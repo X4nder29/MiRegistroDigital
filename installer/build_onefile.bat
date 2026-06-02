@@ -1,13 +1,13 @@
 @echo off
 REM ============================================================
-REM  DocScan Pro — Build ONE-FILE (un solo .exe)
+REM  MiRegistroDigital — Build ONE-FILE (un solo .exe)
 REM  Más portable pero más lento al iniciar y ocupa más RAM.
 REM ============================================================
-title DocScan Pro — One-File Build
+title MiRegistroDigital — One-File Build
 cd /d "%~dp0.."
 echo.
-echo  DocScan Pro — One-File Build
-echo  =============================
+echo  MiRegistroDigital — One-File Build
+echo  ====================================
 echo.
 
 if not exist "main.py" (
@@ -31,7 +31,11 @@ if errorlevel 1 (
     )
 )
 
-if exist "dist\DocScanPro.exe" del /f /q "dist\DocScanPro.exe"
+if exist "dist\MiRegistroDigital.exe" del /f /q "dist\MiRegistroDigital.exe"
+
+REM --- Agregar fonts solo si existen ---
+set FONTS_ARG=
+if exist "fonts\*" set FONTS_ARG=--add-data "fonts;fonts"
 
 echo  Ejecutando PyInstaller (one-file)...
 echo.
@@ -39,12 +43,30 @@ echo.
 %PY% -m PyInstaller main.py ^
     --onefile ^
     --windowed ^
-    --name DocScanPro ^
-    --add-data "fonts;fonts" ^
+    --name MiRegistroDigital ^
+    %FONTS_ARG% ^
     --hidden-import controllers ^
+    --hidden-import controllers.scan_controller ^
+    --hidden-import controllers.ocr_controller ^
+    --hidden-import controllers.export_controller ^
     --hidden-import views ^
+    --hidden-import views.main_window ^
+    --hidden-import views.widgets ^
+    --hidden-import views.theme ^
+    --hidden-import views.civil_page ^
+    --hidden-import views.antecedentes_page ^
+    --hidden-import views.registos_section ^
+    --hidden-import views.scan_page ^
+    --hidden-import views.jobs_page ^
+    --hidden-import views.settings_page ^
     --hidden-import models ^
+    --hidden-import models.scan_model ^
+    --hidden-import models.page_data ^
+    --hidden-import models.config_model ^
+    --hidden-import models.job_model ^
     --hidden-import utils ^
+    --hidden-import utils.image_utils ^
+    --hidden-import utils.file_utils ^
     --hidden-import PySide6.QtWidgets ^
     --hidden-import PySide6.QtGui ^
     --hidden-import PySide6.QtCore ^
@@ -62,8 +84,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo  ========================================
-echo   LISTO: dist\DocScanPro.exe
-echo  ========================================
+echo  ==========================================
+echo   LISTO: dist\MiRegistroDigital.exe
+echo  ==========================================
 echo.
 pause

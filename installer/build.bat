@@ -1,14 +1,14 @@
 @echo off
 REM ============================================================
-REM  DocScan Pro — Compilar a .exe con PyInstaller
+REM  MiRegistroDigital — Compilar a .exe (multi-archivo)
 REM  Ejecutar desde la raíz del proyecto.
 REM  Usa .venv si existe, si no usa el Python del sistema.
 REM ============================================================
-title DocScan Pro — Build
+title MiRegistroDigital — Build
 cd /d "%~dp0.."
 echo.
-echo  DocScan Pro — Build
-echo  ===================
+echo  MiRegistroDigital — Build
+echo  ==========================
 echo.
 
 if not exist "main.py" (
@@ -34,9 +34,8 @@ if errorlevel 1 (
 )
 
 REM --- Limpiar builds anteriores ---
-if exist "dist\DocScanPro"   rmdir /s /q "dist\DocScanPro"
-if exist "build\DocScanPro"  rmdir /s /q "build\DocScanPro"
-if exist "DocScanPro.spec"   del /f /q "DocScanPro.spec"
+if exist "dist\MiRegistroDigital"   rmdir /s /q "dist\MiRegistroDigital"
+if exist "build\MiRegistroDigital"  rmdir /s /q "build\MiRegistroDigital"
 
 REM --- Build con el spec ---
 echo.
@@ -52,8 +51,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo  ========================================
-echo   LISTO: dist\DocScanPro\DocScanPro.exe
-echo  ========================================
+echo  ==========================================
+echo   LISTO: dist\MiRegistroDigital\MiRegistroDigital.exe
+echo  ==========================================
 echo.
 pause

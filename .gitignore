@@ -6,7 +6,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-*.spec
+# *.spec  — tracked explicitly for the build pipeline
 
 # Virtual environment
 .venv/
