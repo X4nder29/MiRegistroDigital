@@ -115,5 +115,11 @@ class ScanModel:
             groups.append(cur)
         return groups
 
+    def load_pages(self, pages: list[PageData]):
+        self._pages.clear()
+        self._pages.extend(pages)
+        for i, p in enumerate(self._pages):
+            p.index = i
+
     def clear(self):
         self._pages.clear()

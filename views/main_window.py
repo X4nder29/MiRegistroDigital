@@ -7,13 +7,21 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QStackedWidget, QFrame,
     QSizePolicy, QStyle, QApplication,
+    QFileDialog, QMessageBox,
 )
 from PySide6.QtCore import Qt, Slot, QSize, QObject, QTimer
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QFont, QIcon, QKeySequence
 
 from models.scan_model import ScanModel
 from models.config_model import ConfigModel
 from models.job_model import Job, JobStatus
+from models.project_model import (
+    save as save_project,
+    load as load_project,
+    get_autosave_path,
+    clear_autosave,
+    load_autosave,
+)
 from controllers.scan_controller import ScanController
 from controllers.ocr_controller import OCRController
 from controllers.export_controller import ExportController
@@ -69,7 +77,9 @@ class NavButton(QPushButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MiRegistroDigital")
+        self._project_path: Path | None = None
+        self._dirty = False
+        self._update_title()
         self.setMinimumSize(1080, 700)
         logger.info("MainWindow inicializando")
 
@@ -85,10 +95,16 @@ class MainWindow(QMainWindow):
         self._process_dialog: ProcessListDialog | None = None
         self._custom_handlers: dict[str, tuple] = {}
 
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(5000)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+
         self._build_ui()
         self._connect()
 
         self.statusBar().showMessage("Listo")
+        self._check_startup_autosave()
         logger.info("MainWindow inicializada")
 
     def _build_ui(self):
@@ -97,6 +113,8 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        self._build_menu_bar()
 
         middle = QWidget()
         mid_layout = QHBoxLayout(middle)
@@ -121,6 +139,26 @@ class MainWindow(QMainWindow):
 
         self._bottom_bar = self._build_bottom_bar()
         root.addWidget(self._bottom_bar)
+
+    def _build_menu_bar(self):
+        from PySide6.QtWidgets import QMenuBar
+        mb = QMenuBar(self)
+        mb.setStyleSheet(f"""
+            QMenuBar {{ background:{BG}; border:none; border-bottom:1px solid {BORDER};
+                        padding:0; font-size:9pt; color:{TEXT}; }}
+            QMenuBar::item {{ padding:4px 14px; }}
+            QMenuBar::item:selected {{ background:{SURFACE2}; }}
+            QMenu {{ background:{SURFACE}; border:1px solid {BORDER};
+                     padding:4px; font-size:9pt; color:{TEXT}; }}
+            QMenu::item:selected {{ background:{SURFACE2}; }}
+        """)
+        menu = mb.addMenu("&Archivo")
+        menu.addAction("Abrir proyecto…", self._open_project, QKeySequence.Open)
+        menu.addAction("Guardar", self._save_project, QKeySequence.Save)
+        menu.addAction("Guardar como…", self._save_project_as, QKeySequence("Ctrl+Shift+S"))
+        menu.addSeparator()
+        menu.addAction("Salir", self.close, QKeySequence("Ctrl+Q"))
+        self.setMenuBar(mb)
 
     def _build_bottom_bar(self) -> QFrame:
         bar = QFrame()
@@ -168,6 +206,125 @@ class MainWindow(QMainWindow):
                 elif j.status == JobStatus.CANCELLED:
                     self._process_dialog.set_job_cancelled(j.id)
             self._process_dialog.show()
+
+    def _update_title(self):
+        name = self._project_path.name if self._project_path else "Sin título"
+        suffix = " *" if self._dirty else ""
+        self.setWindowTitle(f"MiRegistroDigital — {name}{suffix}")
+
+    def _mark_dirty(self):
+        if not self._dirty:
+            self._dirty = True
+            self._update_title()
+        self._autosave_timer.start()
+
+    def _do_autosave(self):
+        if not self._dirty or not self._model.pages:
+            return
+        try:
+            autopath = get_autosave_path()
+            autopath.parent.mkdir(parents=True, exist_ok=True)
+            save_project(autopath, self._model.pages)
+            logger.debug("Autoguardado en %s", autopath)
+        except Exception as e:
+            logger.exception("Error en autoguardado: %s", e)
+
+    def _confirm_save(self) -> bool:
+        """Returns False if the operation was cancelled."""
+        if not self._dirty:
+            return True
+        ret = QMessageBox.question(
+            self, "Guardar cambios",
+            "Hay cambios sin guardar. ¿Desea guardarlos?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+        )
+        if ret == QMessageBox.Save:
+            self._save_project()
+            return True
+        elif ret == QMessageBox.Discard:
+            return True
+        return False
+
+    def _save_project(self):
+        if self._project_path:
+            try:
+                save_project(self._project_path, self._model.pages)
+                self._dirty = False
+                self._update_title()
+                clear_autosave()
+                self.statusBar().showMessage(f"Proyecto guardado: {self._project_path.name}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"No se pudo guardar:\n{e}")
+        else:
+            self._save_project_as()
+
+    def _save_project_as(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar proyecto como", "", "MiRegistroDigital (*.miregistro)")
+        if not path:
+            return
+        p = Path(path)
+        if p.suffix.lower() != ".miregistro":
+            p = p.with_suffix(".miregistro")
+        try:
+            save_project(p, self._model.pages)
+            self._project_path = p
+            self._dirty = False
+            self._update_title()
+            clear_autosave()
+            self.statusBar().showMessage(f"Proyecto guardado: {p.name}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"No se pudo guardar:\n{e}")
+
+    def _open_project(self):
+        if not self._confirm_save():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir proyecto", "", "MiRegistroDigital (*.miregistro)")
+        if not path:
+            return
+        try:
+            pages = load_project(Path(path))
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"No se pudo abrir el proyecto:\n{e}")
+            return
+        self._model.load_pages(pages)
+        self._project_path = Path(path)
+        self._dirty = False
+        self._update_title()
+        clear_autosave()
+        self._refresh_all_views()
+        self.statusBar().showMessage(f"Proyecto cargado: {self._project_path.name}")
+
+    def _check_startup_autosave(self):
+        ap = get_autosave_path()
+        if ap.exists():
+            ret = QMessageBox.question(
+                self, "Recuperar autoguardado",
+                "Se encontró un archivo de recuperación. ¿Desea restaurarlo?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if ret == QMessageBox.Yes:
+                try:
+                    pages = load_autosave()
+                    if pages:
+                        self._model.load_pages(pages)
+                        self._dirty = True
+                        self._update_title()
+                        self._refresh_all_views()
+                        self.statusBar().showMessage(
+                            "Proyecto recuperado del autoguardado")
+                        return
+                except Exception as e:
+                    logger.exception("Error cargando autoguardado: %s", e)
+            clear_autosave()
+
+    def _refresh_all_views(self):
+        pages = self._model.pages
+        self._imp_page.rebuild(pages)
+        self._civil_sect.civil_page.rebuild(pages)
+        self._ant_page.rebuild(pages)
+        self._sync_bookmarks_data()
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -339,6 +496,7 @@ class MainWindow(QMainWindow):
         cp._table.blockSignals(False)
         ap.grid.blockSignals(False)
         self._pending_pages.clear()
+        self._mark_dirty()
 
     @Slot(object)
     def _on_page_added(self, page):
@@ -348,6 +506,7 @@ class MainWindow(QMainWindow):
         self._civil_sect.civil_page.add_page(page.index, img)
         self._ant_page.add_page(page.index, img)
         self.statusBar().showMessage(f"Página {page.index + 1} cargada")
+        self._mark_dirty()
 
     @Slot(int)
     def _on_page_deleted(self, index: int):
@@ -357,6 +516,7 @@ class MainWindow(QMainWindow):
         self._civil_sect.civil_page.remove_page(index)
         self._ant_page.remove_page(index)
         self._sync_bookmarks_data()
+        self._mark_dirty()
 
     @Slot(int)
     def _on_cut_toggled(self, index: int):
@@ -365,6 +525,7 @@ class MainWindow(QMainWindow):
         self._ant_page.set_cut(index, is_cut)
         self._ant_page.update_groups(
             [[p.index for p in g] for g in self._model.get_groups()])
+        self._mark_dirty()
 
     @Slot()
     def _on_clear_cuts(self):
@@ -403,6 +564,7 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.exception("Error actualizando bookmarks_page")
         self._imp_page.set_serial(index, serial, conf)
+        self._mark_dirty()
 
     @Slot(int, float, float, float, float)
     def _on_area_saved(self, page_index: int, x1: float, y1: float, x2: float, y2: float):
@@ -431,6 +593,7 @@ class MainWindow(QMainWindow):
         self._imp_page.set_bookmark(index, display)
         self._civil_sect.civil_page.set_bookmark(index, display)
         self._ant_page.set_bookmark(index, display)
+        self._mark_dirty()
 
     @Slot()
     def _on_order_changed(self):
@@ -439,6 +602,7 @@ class MainWindow(QMainWindow):
         self._civil_sect.civil_page.rebuild(pages)
         self._ant_page.rebuild(pages)
         self._sync_bookmarks_data()
+        self._mark_dirty()
 
     @Slot(str)
     def _on_civil_export(self, folder: str):
@@ -468,6 +632,7 @@ class MainWindow(QMainWindow):
     @Slot(int, str)
     def _on_comment_set(self, index: int, text: str):
         self._model.set_comment(index, text)
+        self._mark_dirty()
 
     @Slot(str)
     def _on_export_original_pdf(self, folder: str):
@@ -733,6 +898,7 @@ class MainWindow(QMainWindow):
             self._imp_page.update_page(index, img)
             self._civil_sect.civil_page.update_page(index, img)
             self._ant_page.update_page(index, img)
+        self._mark_dirty()
 
     @Slot(str)
     def _on_job_cancelled(self, job_id: str):
@@ -841,5 +1007,18 @@ class MainWindow(QMainWindow):
         self._fullscreen_viewer.show()
 
     def closeEvent(self, event):
+        self._autosave_timer.stop()
+        if self._dirty:
+            ret = QMessageBox.question(
+                self, "Guardar cambios",
+                "Hay cambios sin guardar. ¿Desea guardarlos?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            )
+            if ret == QMessageBox.Save:
+                self._save_project()
+            elif ret == QMessageBox.Cancel:
+                event.ignore()
+                return
+        clear_autosave()
         self._cfg.save()
         super().closeEvent(event)
