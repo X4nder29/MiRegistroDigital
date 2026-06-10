@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QSizePolicy, QPushButton,
     QMenu, QToolBar, QRubberBand, QCheckBox, QApplication,
     QInputDialog, QDialog, QProgressBar, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QLineEdit, QSpinBox, QDialogButtonBox,
+    QPlainTextEdit, QLineEdit, QSpinBox, QStackedWidget, QDialogButtonBox,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint, QMimeData, QEvent, QTimer
-from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter, QWheelEvent, QDesktopServices
+from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter, QWheelEvent, QDesktopServices, QIntValidator
 from PySide6.QtCore import QUrl
 
 from utils.image_utils import ndarray_to_qpixmap
@@ -456,100 +456,9 @@ class FullscreenViewer(QDialog):
         self._idx   = start
         self._dual_mode = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        tb = QToolBar()
-        tb.setMovable(False)
-
-        act_prev = QAction("‹  Anterior", self)
-        act_prev.setShortcut(QKeySequence(Qt.Key_Left))
-        act_prev.triggered.connect(self._prev)
-        act_next = QAction("Siguiente  ›", self)
-        act_next.setShortcut(QKeySequence(Qt.Key_Right))
-        act_next.triggered.connect(self._next)
-
-        act_zoomin = QAction("🔍+", self)
-        act_zoomin.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_Plus))
-        act_zoomin.setToolTip("Acercar (Ctrl++)")
-        act_zoomin.triggered.connect(self._zoom_in)
-
-        act_zoomout = QAction("🔍−", self)
-        act_zoomout.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_Minus))
-        act_zoomout.setToolTip("Alejar (Ctrl+-)")
-        act_zoomout.triggered.connect(self._zoom_out)
-
-        act_zoomfit = QAction("🔍", self)
-        act_zoomfit.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_0))
-        act_zoomfit.setToolTip("Ajustar (Ctrl+0)")
-        act_zoomfit.triggered.connect(self._zoom_fit)
-
-        act_dual = QAction("Página doble", self)
-        act_dual.setCheckable(True)
-        act_dual.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_D))
-        act_dual.setToolTip("Ver dos páginas a la vez (Ctrl+D)")
-        act_dual.toggled.connect(self._toggle_dual)
-
-        act_comment = QAction("Comentario", self)
-        act_comment.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_M))
-        act_comment.setToolTip("Añadir/editar comentario (Ctrl+M)")
-        act_comment.triggered.connect(self._edit_comment)
-
-        act_bookmark_shortcut = QAction(self)
-        act_bookmark_shortcut.setShortcut(QKeySequence(Qt.CTRL | Qt.Key_B))
-        act_bookmark_shortcut.triggered.connect(self._quick_bookmark)
-        self.addAction(act_bookmark_shortcut)
-
-        act_close = QAction("✕  Cerrar", self)
-        act_close.setShortcut(QKeySequence(Qt.Key_Escape))
-        act_close.triggered.connect(self.close)
-
-        self._page_label = QLabel()
-        self._bm_label = QLabel()
-        self._bm_label.setCursor(Qt.PointingHandCursor)
-        self._bm_label.setStyleSheet(
-            f"color:{INFO}; border:1px solid {BORDER}; border-radius:4px; "
-            f"padding:2px 8px; font-size:9pt;")
-        self._bm_label.mousePressEvent = lambda e: self._edit_bookmark()
-
-        self._comment_indicator = QLabel()
-        self._comment_indicator.setStyleSheet(
-            f"color:{INFO}; border:1px solid {BORDER}; border-radius:4px; "
-            f"padding:2px 8px; font-size:9pt;")
-        self._comment_indicator.setCursor(Qt.PointingHandCursor)
-        self._comment_indicator.mousePressEvent = lambda e: self._edit_comment()
-
-        self._comment_nav_prev = QPushButton("◀")
-        self._comment_nav_prev.setFixedHeight(26)
-        self._comment_nav_prev.setToolTip("Página anterior con comentario")
-        self._comment_nav_prev.clicked.connect(self._prev_comment)
-
-        self._comment_nav_next = QPushButton("▶")
-        self._comment_nav_next.setFixedHeight(26)
-        self._comment_nav_next.setToolTip("Siguiente página con comentario")
-        self._comment_nav_next.clicked.connect(self._next_comment)
-
-        tb.addAction(act_prev)
-        tb.addAction(act_next)
-        tb.addSeparator()
-        tb.addWidget(self._page_label)
-        tb.addSeparator()
-        tb.addWidget(self._bm_label)
-        tb.addSeparator()
-        tb.addAction(act_zoomin)
-        tb.addAction(act_zoomout)
-        tb.addAction(act_zoomfit)
-        tb.addSeparator()
-        tb.addAction(act_dual)
-        tb.addAction(act_comment)
-        tb.addSeparator()
-        tb.addWidget(self._comment_indicator)
-        tb.addWidget(self._comment_nav_prev)
-        tb.addWidget(self._comment_nav_next)
-        tb.addSeparator()
-        tb.addAction(act_close)
-        layout.addWidget(tb)
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(False)
@@ -557,16 +466,460 @@ class FullscreenViewer(QDialog):
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll.setStyleSheet("QScrollArea { border: none; }")
-
         self._viewer = ImageViewer()
         self._viewer.set_zoom_enabled(True)
         self._scroll.setWidget(self._viewer)
+        main_layout.addWidget(self._scroll, 1)
 
-        layout.addWidget(self._scroll, 1)
+        self._bm_sidebar = self._build_bookmark_sidebar()
+        self._bm_sidebar.setVisible(False)
+        main_layout.addWidget(self._bm_sidebar)
+
+        self._cm_sidebar = self._build_comment_sidebar()
+        self._cm_sidebar.setVisible(False)
+        main_layout.addWidget(self._cm_sidebar)
+
+        self._build_main_sidebar()
+        main_layout.addWidget(self._sidebar)
+
+        self._setup_shortcuts()
         self._show_current()
+
+    # ── Bookmark sidebar ──
+
+    def _build_bookmark_sidebar(self):
+        f = QFrame()
+        f.setFixedWidth(280)
+        f.setStyleSheet(f"background:{SURFACE2}; border-right:1px solid {BORDER};")
+        lay = QVBoxLayout(f)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        hdr = QFrame()
+        hdr.setFixedHeight(40)
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(12, 0, 8, 0)
+        self._bm_title = QLabel()
+        self._bm_title.setStyleSheet(
+            f"color:{TEXT}; font-weight:bold; font-size:10pt; border:none; background:transparent;")
+        btn_close = QPushButton("✕")
+        btn_close.setFixedSize(28, 28)
+        btn_close.setStyleSheet(
+            f"QPushButton {{ background:transparent; border:none; border-radius:4px; "
+            f"color:{TEXT}; font-size:11pt; }}"
+            f"QPushButton:hover {{ background:{SURFACE3}; }}")
+        btn_close.clicked.connect(self._hide_bookmark_sidebar)
+        hl.addWidget(self._bm_title)
+        hl.addStretch()
+        hl.addWidget(btn_close)
+        lay.addWidget(hdr)
+        lay.addWidget(self._sep())
+
+        w = QWidget()
+        wl = QVBoxLayout(w)
+        wl.setContentsMargins(12, 12, 12, 12)
+        wl.setSpacing(6)
+
+        lbl = QLabel("Arrastra para reordenar:")
+        lbl.setStyleSheet(f"color:{TEXT_SEC}; font-size:9pt; border:none; background:transparent;")
+        wl.addWidget(lbl)
+
+        self._bm_list = QListWidget()
+        self._bm_list.setDragDropMode(QListWidget.InternalMove)
+        self._bm_list.setDefaultDropAction(Qt.MoveAction)
+        self._bm_list.setStyleSheet(
+            f"QListWidget {{ background:{SURFACE3}; border:1px solid {BORDER}; "
+            f"border-radius:6px; padding:4px; }}"
+            f"QListWidget::item {{ padding:6px 10px; border-radius:4px; color:{TEXT}; }}"
+            f"QListWidget::item:selected {{ background:{SURFACE}; }}")
+        wl.addWidget(self._bm_list, 1)
+
+        bl = QHBoxLayout()
+        bl.setSpacing(4)
+        b_add = QPushButton("➕ Añadir")
+        b_add.setFixedHeight(30)
+        b_add.clicked.connect(self._bm_add)
+        b_ed = QPushButton("✏️")
+        b_ed.setFixedSize(30, 30)
+        b_ed.clicked.connect(self._bm_edit)
+        b_rm = QPushButton("🗑️")
+        b_rm.setFixedSize(30, 30)
+        b_rm.clicked.connect(self._bm_remove)
+        for b in (b_add, b_ed, b_rm):
+            b.setStyleSheet(
+                f"QPushButton {{ background:{SURFACE3}; border:1px solid {BORDER}; "
+                f"border-radius:4px; color:{TEXT}; }}"
+                f"QPushButton:hover {{ background:{SURFACE}; }}")
+        bl.addWidget(b_add)
+        bl.addWidget(b_ed)
+        bl.addWidget(b_rm)
+        bl.addStretch()
+        wl.addLayout(bl)
+
+        b_ok = QPushButton("✅ Aceptar")
+        b_ok.setFixedHeight(34)
+        b_ok.setStyleSheet(
+            f"QPushButton {{ background:{ACCENT}; border:none; border-radius:6px; "
+            f"color:white; font-weight:bold; }}"
+            f"QPushButton:hover {{ background:#5b9cf6; }}")
+        b_ok.clicked.connect(self._bm_accept)
+        wl.addWidget(b_ok)
+        lay.addWidget(w, 1)
+        return f
+
+    # ── Comment sidebar ──
+
+    def _build_comment_sidebar(self):
+        f = QFrame()
+        f.setFixedWidth(280)
+        f.setStyleSheet(f"background:{SURFACE2}; border-right:1px solid {BORDER};")
+        lay = QVBoxLayout(f)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        hdr = QFrame()
+        hdr.setFixedHeight(40)
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(12, 0, 8, 0)
+        self._cm_title = QLabel()
+        self._cm_title.setStyleSheet(
+            f"color:{TEXT}; font-weight:bold; font-size:10pt; border:none; background:transparent;")
+        btn_close = QPushButton("✕")
+        btn_close.setFixedSize(28, 28)
+        btn_close.setStyleSheet(
+            f"QPushButton {{ background:transparent; border:none; border-radius:4px; "
+            f"color:{TEXT}; font-size:11pt; }}"
+            f"QPushButton:hover {{ background:{SURFACE3}; }}")
+        btn_close.clicked.connect(self._hide_comment_sidebar)
+        hl.addWidget(self._cm_title)
+        hl.addStretch()
+        hl.addWidget(btn_close)
+        lay.addWidget(hdr)
+        lay.addWidget(self._sep())
+
+        w = QWidget()
+        wl = QVBoxLayout(w)
+        wl.setContentsMargins(12, 12, 12, 12)
+        wl.setSpacing(6)
+
+        self._cm_editor = QPlainTextEdit()
+        self._cm_editor.setPlaceholderText("Escribe un comentario para esta página…")
+        self._cm_editor.setFixedHeight(120)
+        self._cm_editor.setStyleSheet(
+            f"QPlainTextEdit {{ background:{SURFACE3}; color:{TEXT}; "
+            f"border:1px solid {BORDER}; border-radius:6px; padding:8px; }}")
+        wl.addWidget(self._cm_editor)
+
+        self._cm_counter = QLabel("Caracteres: 0/500")
+        self._cm_counter.setStyleSheet(
+            f"color:{TEXT_DIM}; font-size:8pt; border:none; background:transparent;")
+        wl.addWidget(self._cm_counter)
+        self._cm_editor.textChanged.connect(self._cm_on_text_changed)
+
+        self._cm_preview_check = QCheckBox("Mostrar vista previa")
+        self._cm_preview_check.setStyleSheet(
+            f"QCheckBox {{ color:{TEXT}; border:none; background:transparent; }}"
+            f"QCheckBox::indicator {{ width:14px; height:14px; }}")
+        self._cm_preview_check.toggled.connect(self._cm_toggle_preview)
+        wl.addWidget(self._cm_preview_check)
+
+        self._cm_preview_lbl = QLabel()
+        self._cm_preview_lbl.setFixedHeight(120)
+        self._cm_preview_lbl.setAlignment(Qt.AlignCenter)
+        self._cm_preview_lbl.setStyleSheet(
+            f"background:{SURFACE3}; border:1px solid {BORDER}; border-radius:6px;")
+        self._cm_preview_lbl.setVisible(False)
+        wl.addWidget(self._cm_preview_lbl)
+
+        cn = QHBoxLayout()
+        prev_cm = QPushButton("◀ Anterior")
+        prev_cm.setFixedHeight(28)
+        prev_cm.setStyleSheet(
+            f"QPushButton {{ background:transparent; border:1px solid {BORDER}; "
+            f"border-radius:4px; color:{INFO}; font-size:8pt; }}"
+            f"QPushButton:hover {{ background:{SURFACE3}; }}")
+        prev_cm.clicked.connect(self._prev_comment)
+        next_cm = QPushButton("Siguiente ▶")
+        next_cm.setFixedHeight(28)
+        next_cm.setStyleSheet(
+            f"QPushButton {{ background:transparent; border:1px solid {BORDER}; "
+            f"border-radius:4px; color:{INFO}; font-size:8pt; }}"
+            f"QPushButton:hover {{ background:{SURFACE3}; }}")
+        next_cm.clicked.connect(self._next_comment)
+        cn.addWidget(prev_cm)
+        cn.addWidget(next_cm)
+        wl.addLayout(cn)
+
+        b_ok = QPushButton("✅ Aceptar")
+        b_ok.setFixedHeight(34)
+        b_ok.setStyleSheet(
+            f"QPushButton {{ background:{ACCENT}; border:none; border-radius:6px; "
+            f"color:white; font-weight:bold; }}"
+            f"QPushButton:hover {{ background:#5b9cf6; }}")
+        b_ok.clicked.connect(self._cm_accept)
+        wl.addWidget(b_ok)
+        wl.addStretch()
+        lay.addWidget(w, 1)
+        return f
+
+    # ── Main sidebar ──
+
+    def _build_main_sidebar(self):
+        self._sidebar = QFrame()
+        self._sidebar.setFixedWidth(80)
+        self._sidebar.setStyleSheet(f"background:{SURFACE2}; border-left:1px solid {BORDER};")
+        sb = QVBoxLayout(self._sidebar)
+        sb.setContentsMargins(4, 8, 4, 8)
+        sb.setSpacing(6)
+        sb.setAlignment(Qt.AlignCenter)
+
+        self._page_edit = QLineEdit(str(self._idx + 1))
+        self._page_edit.setAlignment(Qt.AlignCenter)
+        self._page_edit.setValidator(QIntValidator(1, max(len(self._pages), 1), self))
+        self._page_edit.setFixedWidth(44)
+        self._page_edit.setStyleSheet(
+            f"QLineEdit {{ background:{SURFACE3}; color:{TEXT}; "
+            f"border:1px solid {BORDER}; border-radius:4px; "
+            f"padding:2px; font-size:14pt; font-weight:bold; }}")
+        self._page_edit.returnPressed.connect(self._go_to_page_input)
+
+        lbl_total = QLabel(str(len(self._pages)))
+        lbl_total.setStyleSheet(
+            f"color:{TEXT_DIM}; font-size:9pt; border:none; background:transparent;")
+
+        btn_prev = QPushButton("◀")
+        btn_prev.setFixedSize(44, 44)
+        btn_prev.setToolTip("Página anterior (←)")
+        btn_prev.clicked.connect(self._prev)
+        self._style_btn(btn_prev)
+
+        btn_next = QPushButton("▶")
+        btn_next.setFixedSize(44, 44)
+        btn_next.setToolTip("Siguiente página (→)")
+        btn_next.clicked.connect(self._next)
+        self._style_btn(btn_next)
+
+        sb.addWidget(self._page_edit, 0, Qt.AlignCenter)
+        sb.addWidget(lbl_total, 0, Qt.AlignCenter)
+        sb.addWidget(btn_prev, 0, Qt.AlignCenter)
+        sb.addWidget(btn_next, 0, Qt.AlignCenter)
+
+        sb.addWidget(self._sep())
+
+        for txt, tip, slot in [
+            ("🔍−", "Alejar (Ctrl+-)", self._zoom_out),
+            ("🔍+", "Acercar (Ctrl++)", self._zoom_in),
+            ("🔍", "Ajustar (Ctrl+0)", self._zoom_fit),
+        ]:
+            b = QPushButton(txt)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            b.setFixedSize(44, 36)
+            self._style_btn(b)
+            sb.addWidget(b, 0, Qt.AlignCenter)
+
+        sb.addWidget(self._sep())
+
+        self._btn_dual = QPushButton("📄")
+        self._btn_dual.setCheckable(True)
+        self._btn_dual.setToolTip("Página doble (Ctrl+D)")
+        self._btn_dual.toggled.connect(self._toggle_dual)
+        self._btn_dual.setFixedSize(44, 36)
+        self._style_btn(self._btn_dual)
+        sb.addWidget(self._btn_dual, 0, Qt.AlignCenter)
+
+        sb.addWidget(self._sep())
+
+        self._btn_bookmark = QPushButton("🔖")
+        self._btn_bookmark.setCheckable(True)
+        self._btn_bookmark.setToolTip("Editar Marcadores")
+        self._btn_bookmark.clicked.connect(self._toggle_bookmark_sidebar)
+        self._btn_bookmark.setFixedSize(44, 36)
+        self._style_btn(self._btn_bookmark)
+        sb.addWidget(self._btn_bookmark, 0, Qt.AlignCenter)
+
+        self._btn_comment = QPushButton("💬")
+        self._btn_comment.setCheckable(True)
+        self._btn_comment.setToolTip("Editar Comentario (Ctrl+M)")
+        self._btn_comment.clicked.connect(self._toggle_comment_sidebar)
+        self._btn_comment.setFixedSize(44, 36)
+        self._style_btn(self._btn_comment)
+        sb.addWidget(self._btn_comment, 0, Qt.AlignCenter)
+
+        sb.addStretch()
+
+    def _style_btn(self, btn):
+        btn.setStyleSheet(
+            f"QPushButton {{ background:transparent; border:1px solid transparent; "
+            f"border-radius:6px; color:{TEXT}; font-size:16pt; padding:0px; }}"
+            f"QPushButton:hover {{ background:{SURFACE3}; border:1px solid {BORDER}; }}"
+            f"QPushButton:checked {{ background:{SURFACE3}; border:1px solid {ACCENT}; }}"
+            f"QPushButton:pressed {{ background:{SURFACE}; }}")
+
+    def _sep(self) -> QFrame:
+        f = QFrame()
+        f.setFrameShape(QFrame.HLine)
+        f.setStyleSheet(f"color:{BORDER}; background:{BORDER}; border:none;")
+        f.setFixedHeight(1)
+        return f
+
+    def _setup_shortcuts(self):
+        pairs = [
+            (Qt.Key_Left,             self._prev),
+            (Qt.Key_Right,            self._next),
+            (Qt.CTRL | Qt.Key_Plus,   self._zoom_in),
+            (Qt.CTRL | Qt.Key_Minus,  self._zoom_out),
+            (Qt.CTRL | Qt.Key_0,      self._zoom_fit),
+            (Qt.CTRL | Qt.Key_D,      self._btn_dual.toggle),
+            (Qt.CTRL | Qt.Key_M,      self._toggle_comment_sidebar),
+            (Qt.CTRL | Qt.Key_B,      self._quick_bookmark),
+            (Qt.Key_Escape,           self._on_escape),
+        ]
+        for seq, slot in pairs:
+            a = QAction(self)
+            a.setShortcut(QKeySequence(seq))
+            a.triggered.connect(slot)
+            self.addAction(a)
+
+    # ── Sidebar toggles ──
+
+    def _toggle_bookmark_sidebar(self):
+        v = not self._bm_sidebar.isVisible()
+        self._bm_sidebar.setVisible(v)
+        self._btn_bookmark.setChecked(v)
+        if v:
+            self._bm_title.setText(f"🔖 Marcadores — Pág {self._idx + 1}")
+            self._refresh_bookmark_panel()
+
+    def _toggle_comment_sidebar(self):
+        v = not self._cm_sidebar.isVisible()
+        self._cm_sidebar.setVisible(v)
+        self._btn_comment.setChecked(v)
+        if v:
+            self._cm_title.setText(f"💬 Comentario — Pág {self._idx + 1}")
+            self._refresh_comment_panel()
+
+    def _hide_bookmark_sidebar(self):
+        self._bm_sidebar.setVisible(False)
+        self._btn_bookmark.setChecked(False)
+
+    def _hide_comment_sidebar(self):
+        self._cm_sidebar.setVisible(False)
+        self._btn_comment.setChecked(False)
+
+    def _on_escape(self):
+        if self._bm_sidebar.isVisible():
+            self._hide_bookmark_sidebar()
+        elif self._cm_sidebar.isVisible():
+            self._hide_comment_sidebar()
+        else:
+            self.close()
+
+    # ── Bookmark panel logic ──
+
+    def _refresh_bookmark_panel(self):
+        p = self._pages[self._idx]
+        self._bm_list.clear()
+        bm = p.bookmarks
+        if not bm and p.bookmark:
+            bm = [(1, p.bookmark)]
+        for lvl, title in (bm or []):
+            item = QListWidgetItem(BookmarkDialog._format_item(lvl, title))
+            item.setData(Qt.UserRole, (lvl, title))
+            self._bm_list.addItem(item)
+
+    def _bm_add(self):
+        dlg = _BookmarkItemDialog(self, titulo="", nivel=1)
+        if dlg.exec() == QDialog.Accepted:
+            lvl, title = dlg.get_values()
+            item = QListWidgetItem(BookmarkDialog._format_item(lvl, title))
+            item.setData(Qt.UserRole, (lvl, title))
+            self._bm_list.addItem(item)
+
+    def _bm_edit(self):
+        item = self._bm_list.currentItem()
+        if not item:
+            return
+        lvl, title = item.data(Qt.UserRole)
+        dlg = _BookmarkItemDialog(self, titulo=title, nivel=lvl)
+        if dlg.exec() == QDialog.Accepted:
+            lvl, title = dlg.get_values()
+            item.setText(BookmarkDialog._format_item(lvl, title))
+            item.setData(Qt.UserRole, (lvl, title))
+
+    def _bm_remove(self):
+        item = self._bm_list.currentItem()
+        if item:
+            self._bm_list.takeItem(self._bm_list.row(item))
+
+    def _bm_accept(self):
+        p = self._pages[self._idx]
+        labels = [self._bm_list.item(i).data(Qt.UserRole) for i in range(self._bm_list.count())]
+        p.bookmarks = labels
+        p.bookmark = labels[0][1] if labels else ""
+        self.bookmark_changed.emit(p.index, labels)
+        self._hide_bookmark_sidebar()
+
+    # ── Comment panel logic ──
+
+    def _refresh_comment_panel(self):
+        p = self._pages[self._idx]
+        self._cm_editor.blockSignals(True)
+        self._cm_editor.setPlainText(p.comment)
+        self._cm_editor.blockSignals(False)
+        self._cm_counter.setText(f"Caracteres: {len(p.comment)}/500")
+        self._cm_preview_lbl.setVisible(False)
+        self._cm_preview_check.setChecked(False)
+        self._cm_image = p.display_image
+
+    def _cm_on_text_changed(self):
+        text = self._cm_editor.toPlainText()
+        if len(text) > 500:
+            self._cm_editor.blockSignals(True)
+            self._cm_editor.setPlainText(text[:500])
+            self._cm_editor.moveCursor(self._cm_editor.textCursor().End)
+            self._cm_editor.blockSignals(False)
+            text = text[:500]
+        self._cm_counter.setText(f"Caracteres: {len(text)}/500")
+        if self._cm_preview_check.isChecked() and self._cm_image is not None:
+            self._cm_render_preview(text)
+
+    def _cm_toggle_preview(self, checked: bool):
+        if checked and self._cm_image is not None:
+            self._cm_render_preview(self._cm_editor.toPlainText())
+        self._cm_preview_lbl.setVisible(checked)
+
+    def _cm_render_preview(self, text: str):
+        from utils.image_utils import overlay_comment
+        img = overlay_comment(self._cm_image, text)
+        h, w = img.shape[:2]
+        scale = min(240 / w, 110 / h, 1.0)
+        if scale < 1.0:
+            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        px = ndarray_to_qpixmap(img)
+        self._cm_preview_lbl.setPixmap(px)
+
+    def _cm_accept(self):
+        p = self._pages[self._idx]
+        text = self._cm_editor.toPlainText().strip()
+        p.comment = text
+        self.comment_changed.emit(p.index, text)
+        self._hide_comment_sidebar()
+
+    # ── Display ──
 
     def _toggle_dual(self, checked: bool):
         self._dual_mode = checked
+        self._show_current()
+
+    def _go_to_page_input(self):
+        text = self._page_edit.text().strip()
+        try:
+            page = int(text)
+        except ValueError:
+            page = self._idx + 1
+        page = max(1, min(page, len(self._pages)))
+        self._idx = page - 1
         self._show_current()
 
     def _show_current(self):
@@ -577,65 +930,32 @@ class FullscreenViewer(QDialog):
         else:
             p = self._pages[self._idx]
             self._viewer.set_image(p.display_image)
-            self._update_bm_label(p)
-        self._page_label.setText(
-            f"  Página(s) {self._idx + 1}–{min(self._idx + 2, len(self._pages))} de {len(self._pages)}  "
-            if self._dual_mode
-            else f"  Página {self._idx + 1} de {len(self._pages)}  ")
-        self._update_comment_indicator()
-
-    def _update_bm_label(self, p):
-        if p.bookmarks:
-            first = p.bookmarks[0][1]
-            n = len(p.bookmarks)
-            suffix = f" 📑{n}" if n > 1 else ""
-            tip = "\n".join(f"{'  '*(l-1)}Nivel {l}: {t}" for l, t in p.bookmarks)
-            self._bm_label.setText(f"  {first}{suffix}  ")
-            self._bm_label.setToolTip(tip)
-        elif p.bookmark:
-            self._bm_label.setText(f"  {p.bookmark}  ")
-            self._bm_label.setToolTip("")
-        else:
-            self._bm_label.setText("  + Marcador  ")
-            self._bm_label.setToolTip("")
-
-    def _update_comment_indicator(self):
-        total = len(self._pages)
-        comments_count = sum(1 for p in self._pages if p.comment)
-        has_comment = bool(self._pages[self._idx].comment)
-        icon = "💬" if has_comment else "   "
-        self._comment_indicator.setText(f"{icon} C: {comments_count}/{total}")
+        self._page_edit.setText(str(self._idx + 1))
+        if self._bm_sidebar.isVisible():
+            self._bm_title.setText(f"🔖 Marcadores — Pág {self._idx + 1}")
+            self._refresh_bookmark_panel()
+        if self._cm_sidebar.isVisible():
+            self._cm_title.setText(f"💬 Comentario — Pág {self._idx + 1}")
+            self._refresh_comment_panel()
 
     def _show_dual(self):
         p1 = self._pages[self._idx]
         img1 = p1.display_image
         h1, w1 = img1.shape[:2]
-
         if self._idx + 1 < len(self._pages):
             p2 = self._pages[self._idx + 1]
             img2 = p2.display_image
             h2, w2 = img2.shape[:2]
             target_h = max(h1, h2)
             if h1 != target_h:
-                scale = target_h / h1
-                img1 = cv2.resize(img1, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                s = target_h / h1
+                img1 = cv2.resize(img1, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
             if h2 != target_h:
-                scale = target_h / h2
-                img2 = cv2.resize(img2, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                s = target_h / h2
+                img2 = cv2.resize(img2, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
             self._viewer.set_image(np.hstack([img1, img2]))
-            bm1 = p1.bookmarks[0][1] if p1.bookmarks else p1.bookmark
-            bm2 = p2.bookmarks[0][1] if p2.bookmarks else p2.bookmark
-            if bm1 and bm2:
-                self._bm_label.setText(f"  {bm1}  |  {bm2}  ")
-            elif bm1:
-                self._bm_label.setText(f"  {bm1}  ")
-            elif bm2:
-                self._bm_label.setText(f"  {bm2}  ")
-            else:
-                self._bm_label.setText("  + Marcador  ")
         else:
             self._viewer.set_image(img1)
-            self._update_bm_label(p1)
 
     def _quick_bookmark(self):
         p = self._pages[self._idx]
@@ -651,25 +971,7 @@ class FullscreenViewer(QDialog):
             self._show_current()
             self.bookmark_changed.emit(p.index, labels)
 
-    def _edit_bookmark(self):
-        p = self._pages[self._idx]
-        current = p.bookmarks if p.bookmarks else ([(1, p.bookmark)] if p.bookmark else [])
-        dlg = BookmarkDialog(self, self._idx, current)
-        if dlg.exec() == QDialog.Accepted:
-            labels = dlg.get_bookmarks()
-            p.bookmarks = labels
-            p.bookmark = labels[0][1] if labels else ""
-            self._show_current()
-            self.bookmark_changed.emit(p.index, labels)
-
-    def _edit_comment(self):
-        p = self._pages[self._idx]
-        dlg = CommentDialog(self, self._idx, p.comment, p.display_image)
-        if dlg.exec() == QDialog.Accepted:
-            text = dlg.get_comment()
-            p.comment = text
-            self._show_current()
-            self.comment_changed.emit(p.index, text)
+    # ── Navigation ──
 
     def _prev_comment(self):
         for i in range(self._idx - 1, -1, -1):
@@ -703,14 +1005,6 @@ class FullscreenViewer(QDialog):
         if self._idx < len(self._pages) - 1:
             self._idx += 2 if self._dual_mode else 1
             self._show_current()
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Left:
-            self._prev()
-        elif event.key() == Qt.Key_Right:
-            self._next()
-        else:
-            super().keyPressEvent(event)
 
     def wheelEvent(self, event: QWheelEvent):
         if event.modifiers() & Qt.ControlModifier:
