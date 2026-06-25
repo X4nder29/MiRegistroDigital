@@ -4,7 +4,7 @@ import sys
 import traceback
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QFontDatabase
+from PySide6.QtGui import QFontDatabase, QIcon
 
 from views.main_window import MainWindow
 from views.theme import apply_palette, STYLESHEET
@@ -67,6 +67,12 @@ def main():
                 logger.info("Font JetBrainsMono NF cargado")
     else:
         logger.warning("Font JetBrainsMono NF no encontrado en %s", font_path)
+
+    # ── Icono de aplicación ─────────────────────────────────────────
+    icon_path = base / "resources" / "app_icon.svg"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+        logger.info("Icono de aplicación cargado")
 
     apply_palette(app)
     app.setStyleSheet(STYLESHEET)

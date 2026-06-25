@@ -3,9 +3,10 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QSpinBox, QCheckBox, QLineEdit, QFileDialog,
-    QFormLayout, QFrame, QScrollArea,
+    QFormLayout, QFrame, QScrollArea, QKeySequenceEdit,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence
 
 from models.config_model import ConfigModel
 from views.theme import SURFACE, TEXT_DIM, SUCCESS
@@ -49,10 +50,12 @@ class SettingsPage(QWidget):
         cv.setContentsMargins(24, 20, 24, 20)
         cv.setSpacing(16)
 
+        cv.addWidget(self._import_group())
         cv.addWidget(self._correction_group())
         cv.addWidget(self._ocr_group())
         cv.addWidget(self._output_group())
         cv.addWidget(self._ant_group())
+        cv.addWidget(self._shortcuts_group())
         cv.addStretch()
 
         scroll.setWidget(container)
@@ -73,6 +76,13 @@ class SettingsPage(QWidget):
         f.addRow("", self._auto_persp)
         self._auto_rot = QCheckBox("Corregir rotación automáticamente")
         f.addRow("", self._auto_rot)
+        return box
+
+    def _import_group(self) -> QGroupBox:
+        box = QGroupBox("Importaci\u00f3n")
+        f = QFormLayout(box)
+        self._import_dpi = QSpinBox(); self._import_dpi.setRange(72, 600); self._import_dpi.setSuffix(" DPI"); self._import_dpi.setFixedWidth(100)
+        f.addRow("DPI de PDFs importados:", self._import_dpi)
         return box
 
     def _ocr_group(self) -> QGroupBox:
@@ -110,8 +120,17 @@ class SettingsPage(QWidget):
         f.addRow("Dígitos del serial:", self._padding)
         return box
 
+    def _shortcuts_group(self) -> QGroupBox:
+        box = QGroupBox("Atajos de teclado")
+        f = QFormLayout(box)
+        self._shortcut_bookmark = QKeySequenceEdit()
+        self._shortcut_bookmark.setFixedWidth(220)
+        f.addRow("Agregar marcador (vista completa):", self._shortcut_bookmark)
+        return box
+
     def _load(self):
         c = self._cfg
+        self._import_dpi.setValue(c.get("import", "pdf_dpi", 300))
         self._auto_persp.setChecked(c.get("correction", "auto_perspective", True))
         self._auto_rot.setChecked(c.get("correction", "auto_rotation", True))
         self._margin.setValue(int(c.get("ocr", "margin_right_pct", 0.15) * 100))
@@ -122,9 +141,11 @@ class SettingsPage(QWidget):
         self._pdf_dpi.setValue(c.get("output", "pdf_dpi", 200))
         self._serial_ini.setValue(c.get("antecedentes", "serial_inicial", 1))
         self._padding.setValue(c.get("antecedentes", "serial_padding", 5))
+        self._shortcut_bookmark.setKeySequence(QKeySequence(c.get("shortcuts", "fullscreen_bookmark", "Insert")))
 
     def _save(self):
         c = self._cfg
+        c.set("import",       "pdf_dpi",               self._import_dpi.value())
         c.set("correction",   "auto_perspective",      self._auto_persp.isChecked())
         c.set("correction",   "auto_rotation",         self._auto_rot.isChecked())
         c.set("ocr",          "margin_right_pct",      self._margin.value() / 100)
@@ -135,6 +156,7 @@ class SettingsPage(QWidget):
         c.set("output",       "pdf_dpi",               self._pdf_dpi.value())
         c.set("antecedentes", "serial_inicial",        self._serial_ini.value())
         c.set("antecedentes", "serial_padding",        self._padding.value())
+        c.set("shortcuts",    "fullscreen_bookmark",   self._shortcut_bookmark.keySequence().toString())
         c.save()
         self._banner.setVisible(True)
         from PySide6.QtCore import QTimer

@@ -6,10 +6,10 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QStackedWidget, QFrame,
-    QSizePolicy, QStyle, QApplication,
-    QFileDialog, QMessageBox,
+    QSizePolicy, QApplication,
+    QFileDialog, QMessageBox, QProgressDialog,
 )
-from PySide6.QtCore import Qt, Slot, QSize, QObject, QTimer
+from PySide6.QtCore import Qt, Slot, Signal, QSize, QObject, QTimer, QRunnable, QThreadPool
 from PySide6.QtGui import QFont, QIcon, QKeySequence
 
 from models.scan_model import ScanModel
@@ -25,23 +25,19 @@ from models.project_model import (
 from controllers.scan_controller import ScanController
 from controllers.ocr_controller import OCRController
 from controllers.export_controller import ExportController
-from views.scan_page import ScanPage
-from views.registos_section import RegistosSection
-from views.antecedentes_page import AntecedentesPage
+from views.document_page import DocumentPage
 from views.jobs_page import JobsPage
 from views.settings_page import SettingsPage
 from views.widgets import FullscreenViewer, ProcessListDialog
-from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2, INFO, SUCCESS, DANGER
+from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2, INFO, WARNING
 
 logger = logging.getLogger("docscan.main")
 
 
 _NAV = [
-    ("import",       "   Importar"),
-    ("civil",        "   Registros"),
-    ("antecedentes", "   Antecedentes"),
-    ("jobs",         "   Trabajos"),
-    ("settings",     "   Ajustes"),
+    ("documentos",   "\U0001f4c4  Documentos"),
+    ("jobs",         "\U0001f504  Trabajos"),
+    ("settings",     "\u2699\ufe0f  Ajustes"),
 ]
 
 
@@ -74,6 +70,26 @@ class NavButton(QPushButton):
         """)
 
 
+class _AutosaveWorker(QRunnable):
+    class _S(QObject):
+        done  = Signal()
+        error = Signal(str)
+
+    def __init__(self, pages: list, path: Path):
+        super().__init__()
+        self.pages = pages
+        self.path  = path
+        self.s     = self._S()
+
+    def run(self):
+        try:
+            from models.project_model import save as save_project
+            save_project(self.path, self.pages)
+            self.s.done.emit()
+        except Exception as e:
+            self.s.error.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -99,9 +115,29 @@ class MainWindow(QMainWindow):
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(5000)
         self._autosave_timer.timeout.connect(self._do_autosave)
+        self._autosave_running = False
+        self._autosave_pending = False
+        self._autosave_worker: _AutosaveWorker | None = None
 
         self._build_ui()
         self._connect()
+
+        # Unified permanent status bar
+        self._sb_page = QLabel("")
+        self._sb_page.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
+        self._sb_serial = QLabel("")
+        self._sb_serial.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
+        self._sb_cut = QLabel("")
+        self._sb_cut.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
+        self._btn_processes = QPushButton("Procesos")
+        self._btn_processes.setFixedHeight(22)
+        self._btn_processes.setStyleSheet(
+            f"QPushButton {{ background: {SURFACE2}; border: 1px solid {BORDER}; "
+            f"border-radius: 4px; padding: 0 12px; font-size:8pt; color:{TEXT}; }}"
+            f"QPushButton:hover {{ background: {SURFACE3}; }}")
+        self._btn_processes.clicked.connect(self._open_process_dialog)
+        self.statusBar().addPermanentWidget(self._btn_processes)
+        self._update_status_bar()
 
         self.statusBar().showMessage("Listo")
         self._check_startup_autosave()
@@ -124,21 +160,15 @@ class MainWindow(QMainWindow):
         mid_layout.addWidget(self._build_sidebar())
 
         self._stack = QStackedWidget()
-        self._imp_page    = ScanPage()
-        self._civil_sect  = RegistosSection()
-        self._ant_page    = AntecedentesPage()
-        self._jobs_page   = JobsPage()
-        self._sett_page   = SettingsPage(self._cfg)
+        self._doc_page   = DocumentPage()
+        self._jobs_page  = JobsPage()
+        self._sett_page  = SettingsPage(self._cfg)
 
-        for page in (self._imp_page, self._civil_sect, self._ant_page,
-                     self._jobs_page, self._sett_page):
+        for page in (self._doc_page, self._jobs_page, self._sett_page):
             self._stack.addWidget(page)
 
         mid_layout.addWidget(self._stack)
         root.addWidget(middle, 1)
-
-        self._bottom_bar = self._build_bottom_bar()
-        root.addWidget(self._bottom_bar)
 
     def _build_menu_bar(self):
         from PySide6.QtWidgets import QMenuBar
@@ -153,44 +183,13 @@ class MainWindow(QMainWindow):
             QMenu::item:selected {{ background:{SURFACE2}; }}
         """)
         menu = mb.addMenu("&Archivo")
-        menu.addAction("Abrir proyecto…", self._open_project, QKeySequence.Open)
+        menu.addAction("Abrir proyecto\u2026", self._open_project, QKeySequence.Open)
         menu.addAction("Guardar", self._save_project, QKeySequence.Save)
-        menu.addAction("Guardar como…", self._save_project_as, QKeySequence("Ctrl+Shift+S"))
+        menu.addAction("Guardar como\u2026", self._save_project_as, QKeySequence("Ctrl+Shift+S"))
+        menu.addAction("Cerrar proyecto", self._close_project, QKeySequence("Ctrl+W"))
         menu.addSeparator()
         menu.addAction("Salir", self.close, QKeySequence("Ctrl+Q"))
         self.setMenuBar(mb)
-
-    def _build_bottom_bar(self) -> QFrame:
-        bar = QFrame()
-        bar.setFixedHeight(34)
-        bar.setStyleSheet(f"background:{SURFACE}; border-top: 1px solid {BORDER};")
-        hl = QHBoxLayout(bar)
-        hl.setContentsMargins(16, 0, 16, 0)
-        hl.setSpacing(8)
-
-        self._status_msg = QLabel("Listo")
-        self._status_msg.setStyleSheet(f"color:{TEXT_DIM}; font-size:9pt; border:none;")
-        hl.addWidget(self._status_msg, 1)
-
-        self._notif_label = QLabel()
-        self._notif_label.setVisible(False)
-        self._notif_label.setFixedHeight(26)
-        hl.addWidget(self._notif_label)
-
-        self._notif_timer = QTimer(self)
-        self._notif_timer.setSingleShot(True)
-        self._notif_timer.timeout.connect(self._hide_notification)
-
-        self._btn_processes = QPushButton("Procesos")
-        self._btn_processes.setFixedHeight(26)
-        self._btn_processes.setStyleSheet(
-            f"QPushButton {{ background: {SURFACE2}; border: 1px solid {BORDER}; "
-            f"border-radius: 4px; padding: 0 12px; font-size:9pt; color:{TEXT}; }}"
-            f"QPushButton:hover {{ background: {SURFACE3}; }}")
-        self._btn_processes.clicked.connect(self._open_process_dialog)
-        hl.addWidget(self._btn_processes)
-
-        return bar
 
     def _open_process_dialog(self):
         if self._safe_process_dialog() is None:
@@ -208,26 +207,50 @@ class MainWindow(QMainWindow):
             self._process_dialog.show()
 
     def _update_title(self):
-        name = self._project_path.name if self._project_path else "Sin título"
+        name = self._project_path.name if self._project_path else "Sin t\u00edtulo"
         suffix = " *" if self._dirty else ""
-        self.setWindowTitle(f"MiRegistroDigital — {name}{suffix}")
+        self.setWindowTitle(f"MiRegistroDigital \u2014 {name}{suffix}")
 
     def _mark_dirty(self):
         if not self._dirty:
             self._dirty = True
             self._update_title()
-        self._autosave_timer.start()
+        if self._autosave_running:
+            self._autosave_pending = True
+        else:
+            self._autosave_timer.start()
 
     def _do_autosave(self):
+        if self._autosave_running:
+            return
         if not self._dirty or not self._model.pages:
             return
-        try:
-            autopath = get_autosave_path()
-            autopath.parent.mkdir(parents=True, exist_ok=True)
-            save_project(autopath, self._model.pages)
-            logger.debug("Autoguardado en %s", autopath)
-        except Exception as e:
-            logger.exception("Error en autoguardado: %s", e)
+        self._autosave_running = True
+        self._autosave_pending = False
+        autopath = get_autosave_path()
+        autopath.parent.mkdir(parents=True, exist_ok=True)
+        worker = _AutosaveWorker(self._model.pages.copy(), autopath)
+        worker.s.done.connect(self._on_autosave_done)
+        worker.s.error.connect(self._on_autosave_error)
+        self._autosave_worker = worker
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_autosave_done(self):
+        self._autosave_worker = None
+        self._autosave_running = False
+        if self._autosave_pending:
+            self._autosave_timer.start()
+        else:
+            self._dirty = False
+            self.statusBar().clearMessage()
+            self._update_title()
+
+    def _on_autosave_error(self, err: str):
+        self._autosave_worker = None
+        self._autosave_running = False
+        logger.error("Error en autoguardado: %s", err)
+        if self._autosave_pending:
+            self._autosave_timer.start()
 
     def _confirm_save(self) -> bool:
         """Returns False if the operation was cancelled."""
@@ -235,7 +258,7 @@ class MainWindow(QMainWindow):
             return True
         ret = QMessageBox.question(
             self, "Guardar cambios",
-            "Hay cambios sin guardar. ¿Desea guardarlos?",
+            "Hay cambios sin guardar. \u00bfDesea guardarlos?",
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
         )
         if ret == QMessageBox.Save:
@@ -283,25 +306,62 @@ class MainWindow(QMainWindow):
             self, "Abrir proyecto", "", "MiRegistroDigital (*.miregistro)")
         if not path:
             return
+
+        progress = QProgressDialog("Cargando proyecto…", None, 0, 0, self)
+        progress.setWindowTitle("Abriendo proyecto")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+        QApplication.processEvents()
+
         try:
-            pages = load_project(Path(path))
+            def _on_progress(current: int, total: int):
+                progress.setLabelText(f"Decodificando página {current} de {total}…")
+                QApplication.processEvents()
+
+            pages = load_project(Path(path), progress_callback=_on_progress)
+
+            self._model.load_pages(pages)
+            self._project_path = Path(path)
+            self._dirty = False
+            self._update_title()
+            clear_autosave()
+
+            progress.setLabelText("Reconstruyendo interfaz…")
+            QApplication.processEvents()
+
+            def _on_rebuild(current: int, total: int):
+                progress.setLabelText(f"Reconstruyendo interfaz… {current}/{total}")
+                QApplication.processEvents()
+
+            self._doc_page.rebuild(pages, progress_callback=_on_rebuild)
         except Exception as e:
+            progress.close()
             QMessageBox.warning(self, "Error", f"No se pudo abrir el proyecto:\n{e}")
             return
-        self._model.load_pages(pages)
-        self._project_path = Path(path)
+        finally:
+            progress.close()
+
+        self.statusBar().showMessage(f"Proyecto cargado: {self._project_path.name}")
+
+    def _close_project(self):
+        if not self._confirm_save():
+            return
+        self._autosave_timer.stop()
+        self._model.clear()
+        self._project_path = None
         self._dirty = False
         self._update_title()
         clear_autosave()
         self._refresh_all_views()
-        self.statusBar().showMessage(f"Proyecto cargado: {self._project_path.name}")
+        self._doc_page.clear()
+        self.statusBar().showMessage("Proyecto cerrado")
 
     def _check_startup_autosave(self):
         ap = get_autosave_path()
         if ap.exists():
             ret = QMessageBox.question(
                 self, "Recuperar autoguardado",
-                "Se encontró un archivo de recuperación. ¿Desea restaurarlo?",
+                "Se encontr\u00f3 un archivo de recuperaci\u00f3n. \u00bfDesea restaurarlo?",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if ret == QMessageBox.Yes:
@@ -321,10 +381,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_all_views(self):
         pages = self._model.pages
-        self._imp_page.rebuild(pages)
-        self._civil_sect.civil_page.rebuild(pages)
-        self._ant_page.rebuild(pages)
-        self._sync_bookmarks_data()
+        self._doc_page.rebuild(pages)
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -342,17 +399,9 @@ class MainWindow(QMainWindow):
         v.addWidget(logo)
         v.addSpacing(16)
 
-        style = QApplication.style()
-        icon_map = {
-            "import": style.standardIcon(QStyle.SP_DialogOpenButton),
-            "civil":  style.standardIcon(QStyle.SP_FileDialogDetailedView),
-            "antecedentes": style.standardIcon(QStyle.SP_DirIcon),
-            "jobs":   style.standardIcon(QStyle.SP_BrowserReload),
-            "settings": style.standardIcon(QStyle.SP_DialogApplyButton),
-        }
         self._nav_btns: dict[str, NavButton] = {}
         for key, label in _NAV:
-            btn = NavButton(label, icon_map[key])
+            btn = NavButton(label)
             btn.clicked.connect(lambda checked, k=key: self._navigate(k))
             self._nav_btns[key] = btn
             v.addWidget(btn)
@@ -364,86 +413,74 @@ class MainWindow(QMainWindow):
         return sidebar
 
     def _navigate(self, key: str):
-        idx = {"import": 0, "civil": 1, "antecedentes": 2, "jobs": 3, "settings": 4}
+        idx = {"documentos": 0, "jobs": 1, "settings": 2}
         for k, btn in self._nav_btns.items():
             btn.setChecked(k == key)
         self._stack.setCurrentIndex(idx.get(key, 0))
         self._cfg.set("ui", "last_page", key)
 
     def _connect(self):
-        logger.info("Conectando señales…")
-        ip = self._imp_page
+        logger.info("Conectando se\u00f1ales\u2026")
+        dp = self._doc_page
 
-        ip.import_images_requested.connect(self._on_import)
-        ip.import_pdf_requested.connect(self._on_import)
-        ip.import_cancel_requested.connect(self._scan.cancel_import)
-        ip.cut_toggled.connect(self._on_cut_toggled)
-        ip.page_deleted.connect(self._on_page_deleted)
-        ip.fullscreen_requested.connect(self._open_fullscreen)
-        ip.navigate.connect(self._navigate)
-        ip.correction_requested.connect(self._scan.auto_correct)
-        ip.rotation_changed.connect(self._scan.rotate_manual)
-        ip.reset_correction.connect(self._scan.reset_correction)
+        # Import
+        dp.import_images_requested.connect(self._on_import)
+        dp.import_pdf_requested.connect(self._on_import)
+        dp.import_cancel_requested.connect(self._scan.cancel_import)
 
-        ip.page_reordered.connect(self._scan.reorder_page)
-        ip.bookmark_set.connect(self._scan.set_bookmark)
+        # Correction
+        dp.correction_requested.connect(self._scan.auto_correct)
+        dp.rotation_changed.connect(self._scan.rotate_manual)
+        dp.reset_correction.connect(self._scan.reset_correction)
 
+        # Page management
+        dp.cut_toggled.connect(self._on_cut_toggled)
+        dp.page_deleted.connect(self._on_page_deleted)
+        dp.page_reordered.connect(self._scan.reorder_page)
+        dp.fullscreen_requested.connect(self._open_fullscreen)
+
+        # Bookmarks / Comments
+        dp.bookmark_set.connect(self._scan.set_bookmark)
+        dp.comment_set.connect(self._on_comment_set)
+        dp.clear_cuts_requested.connect(self._on_clear_cuts)
+
+        # OCR
+        dp.ocr_all_requested.connect(self._on_ocr_all)
+        dp.ocr_page_requested.connect(self._ocr.run_page)
+        dp.ocr_cancel_requested.connect(self._on_ocr_cancel)
+        dp.serial_corrected.connect(self._ocr.override)
+        dp.ocr_area_saved.connect(self._on_area_saved)
+        dp.parallel_workers_changed.connect(self._on_parallel_workers_changed)
+
+        # Export
+        dp.export_civil_requested.connect(self._on_civil_export)
+        dp.export_bookmark_requested.connect(self._on_civil_export_bookmark)
+        dp.export_original_pdf_requested.connect(self._on_export_original_pdf)
+        dp.export_ant_requested.connect(self._on_ant_export)
+        dp.export_ant_single_pdf.connect(self._on_ant_export_single_pdf)
+        dp.export_ant_split_bookmark.connect(self._on_ant_export_split_bookmark)
+        dp.bookmarks_export_requested.connect(self._on_bookmarks_export)
+        dp.merge_requested.connect(self._on_merge_pdfs)
+
+        dp.set_parallel_workers(self._cfg.get("ocr", "parallel_workers", 4))
+
+        # Scan model signals
         self._scan.order_changed.connect(self._on_order_changed)
         self._scan.bookmark_updated.connect(self._on_bookmark_updated)
-
         self._scan.page_added.connect(self._on_page_queued)
         self._scan.import_done.connect(self._flush_pending_pages)
         self._scan.import_done.connect(lambda: self.statusBar().showMessage(
-            f"Importación completa — {self._model.count} página(s)"))
-        self._scan.import_progress.connect(ip.show_import_progress)
+            f"Importaci\u00f3n completa \u2014 {self._model.count} p\u00e1gina(s)"))
+        self._scan.import_progress.connect(dp.show_import_progress)
         self._scan.error.connect(self._on_error)
         self._scan.correction_done.connect(self._on_correction_done)
-        logger.debug("Señales de ScanPage/ScanController conectadas")
 
-        cs = self._civil_sect
-        cp = cs.civil_page
-        cs.ocr_all_requested.connect(self._on_ocr_all)
-        cs.ocr_page_requested.connect(self._ocr.run_page)
-        cs.ocr_cancel_requested.connect(self._on_ocr_cancel)
-        cs.serial_corrected.connect(self._ocr.override)
-        cs.export_requested.connect(self._on_civil_export)
-        cs.export_bookmark_requested.connect(self._on_civil_export_bookmark)
-        cs.comment_set.connect(self._on_comment_set)
-        cs.export_original_pdf_requested.connect(self._on_export_original_pdf)
-        cs.ocr_area_saved.connect(self._on_area_saved)
-        cs.parallel_workers_changed.connect(self._on_parallel_workers_changed)
-
-        cp.page_reordered.connect(self._scan.reorder_page)
-        cp.page_reordered_seq.connect(self._scan.reorder_to_sequence)
-        cp.bookmark_set.connect(self._scan.set_bookmark)
-
-        cs.bookmarks_export_requested.connect(self._on_bookmarks_export)
-        cs.merge_requested.connect(self._on_merge_pdfs)
-
-        # init from config
-        cp.set_parallel_workers(self._cfg.get("ocr", "parallel_workers", 4))
-
+        # OCR signals
         self._ocr.ocr_result.connect(self._on_ocr_result)
-        self._ocr.ocr_all_done.connect(cp.ocr_finished)
-        self._ocr.ocr_all_done.connect(self._sync_bookmarks_data)
-        self._ocr.ocr_error.connect(cp.set_ocr_error)
-        logger.debug("Señales de CivilPage/OCRController conectadas")
+        self._ocr.ocr_all_done.connect(dp.ocr_finished)
+        self._ocr.ocr_error.connect(self._on_ocr_error_page)
 
-        self._scan.import_done.connect(self._sync_bookmarks_data)
-
-        ap = self._ant_page
-        ap.cut_toggle_requested.connect(self._on_cut_toggled)
-        ap.clear_cuts_requested.connect(self._on_clear_cuts)
-        ap.export_requested.connect(self._on_ant_export)
-        ap.export_single_pdf.connect(self._on_ant_export_single_pdf)
-        ap.export_split_bookmark.connect(self._on_ant_export_split_bookmark)
-        ap.fullscreen_requested.connect(self._open_fullscreen)
-        ap.page_deleted.connect(self._on_page_deleted)
-        ap.page_reordered.connect(self._scan.reorder_page)
-        ap.bookmark_set.connect(self._scan.set_bookmark)
-        ap.comment_set.connect(self._on_comment_set)
-        ap.export_original_pdf_requested.connect(self._on_export_original_pdf)
-
+        # Export signals
         self._export.job_created.connect(self._on_job_created)
         self._export.job_progress.connect(self._on_job_progress)
         self._export.job_done.connect(self._on_job_done)
@@ -454,24 +491,57 @@ class MainWindow(QMainWindow):
         self._export.job_done.connect(self._on_process_done)
         self._export.job_error.connect(self._on_process_error)
         self._export.job_cancelled.connect(self._on_process_cancelled)
-        logger.debug("Señales de ExportController conectadas")
 
+        # Other pages
         self._jobs_page.cancel_requested.connect(self._on_export_cancel)
-
         self._sett_page.settings_saved.connect(
-            lambda: self.statusBar().showMessage("Configuración guardada", 3000))
+            lambda: self.statusBar().showMessage("Configuraci\u00f3n guardada", 3000))
 
-        self._navigate("import")
-        self._nav_btns["import"].setChecked(True)
+        # Unified status bar signals
+        self._doc_page.grid.page_selected.connect(lambda i: self._update_status_bar())
+        self._scan.bookmark_updated.connect(lambda *a: self._update_status_bar())
+        self._scan.correction_done.connect(lambda *a: self._update_status_bar())
+        self._scan.import_done.connect(lambda: self._update_status_bar())
+        self._scan.page_added.connect(lambda p: self._update_status_bar())
+        self._scan.order_changed.connect(self._update_status_bar)
+        self._ocr.ocr_result.connect(lambda *a: self._update_status_bar())
+        self._doc_page.cut_toggled.connect(lambda i: self._update_status_bar())
+        self._doc_page.page_deleted.connect(lambda i: self._update_status_bar())
+
+        self._navigate("documentos")
+        self._nav_btns["documentos"].setChecked(True)
+
+    def _update_status_bar(self):
+        total = self._model.count
+        if total == 0:
+            self._sb_page.setText("")
+            self._sb_serial.setText("")
+            self._sb_cut.setText("")
+            return
+        idx = self._doc_page._current_idx
+        self._sb_page.setText(f"Página {idx + 1} / {total}" if idx >= 0 else f"0 / {total}")
+        page = self._model.get(idx) if idx >= 0 else None
+        if page:
+            self._sb_serial.setText(f"Serial: {page.serial or '—'}")
+            self._sb_cut.setText("✂ Corte: ON" if page.is_cut_point else "")
+            self._sb_cut.setStyleSheet(
+                f"font-size:8pt; color:{WARNING if page.is_cut_point else TEXT_DIM}; border:none; padding:0 4px;")
+        else:
+            self._sb_serial.setText("")
+            self._sb_cut.setText("")
 
     def _on_error(self, msg: str):
         self.statusBar().showMessage(f"Error: {msg}")
 
+    @Slot(int, str)
+    def _on_ocr_error_page(self, index: int, msg: str):
+        logger.warning("OCR error p\u00e1gina %d: %s", index, msg)
+
     @Slot(list)
     def _on_import(self, paths: list[Path]):
         logger.info("Importando %d archivos", len(paths))
-        self._imp_page.import_busy(True)
-        self.statusBar().showMessage(f"Importando {len(paths)} archivo(s)…")
+        self._doc_page.import_busy(True)
+        self.statusBar().showMessage(f"Importando {len(paths)} archivo(s)\u2026")
         self._scan.import_files(paths)
 
     @Slot(object)
@@ -480,50 +550,38 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _flush_pending_pages(self):
-        ip = self._imp_page
-        ip.import_busy(False)
-        ip.grid.blockSignals(True)
-        cp = self._civil_sect.civil_page
-        cp._table.blockSignals(True)
-        ap = self._ant_page
-        ap.grid.blockSignals(True)
+        dp = self._doc_page
+        dp.import_busy(False)
+        dp.grid.blockSignals(True)
+        dp._ocr_table.blockSignals(True)
         for page in self._pending_pages:
             img = page.display_image
-            ip.add_page(page.index, img)
-            cp.add_page(page.index, img)
-            ap.add_page(page.index, img)
-        ip.grid.blockSignals(False)
-        cp._table.blockSignals(False)
-        ap.grid.blockSignals(False)
+            dp.add_page(page.index, img)
+        dp.grid.blockSignals(False)
+        dp._ocr_table.blockSignals(False)
         self._pending_pages.clear()
         self._mark_dirty()
 
     @Slot(object)
     def _on_page_added(self, page):
-        logger.debug("Página añadida directa: index=%d", page.index)
+        logger.debug("P\u00e1gina a\u00f1adida directa: index=%d", page.index)
         img = page.display_image
-        self._imp_page.add_page(page.index, img)
-        self._civil_sect.civil_page.add_page(page.index, img)
-        self._ant_page.add_page(page.index, img)
-        self.statusBar().showMessage(f"Página {page.index + 1} cargada")
+        self._doc_page.add_page(page.index, img)
+        self.statusBar().showMessage(f"P\u00e1gina {page.index + 1} cargada")
         self._mark_dirty()
 
     @Slot(int)
     def _on_page_deleted(self, index: int):
-        logger.info("Página eliminada: %d", index)
+        logger.info("P\u00e1gina eliminada: %d", index)
         self._model.remove(index)
-        self._imp_page.remove_page(index)
-        self._civil_sect.civil_page.remove_page(index)
-        self._ant_page.remove_page(index)
-        self._sync_bookmarks_data()
+        self._doc_page.remove_page(index)
         self._mark_dirty()
 
     @Slot(int)
     def _on_cut_toggled(self, index: int):
         is_cut = self._model.toggle_cut(index)
-        self._imp_page.set_cut(index, is_cut)
-        self._ant_page.set_cut(index, is_cut)
-        self._ant_page.update_groups(
+        self._doc_page.set_cut(index, is_cut)
+        self._doc_page.update_groups(
             [[p.index for p in g] for g in self._model.get_groups()])
         self._mark_dirty()
 
@@ -531,14 +589,13 @@ class MainWindow(QMainWindow):
     def _on_clear_cuts(self):
         self._model.set_cuts(set())
         for page in self._model.pages:
-            self._imp_page.set_cut(page.index, False)
-            self._ant_page.set_cut(page.index, False)
-        self._ant_page.update_groups([])
+            self._doc_page.set_cut(page.index, False)
+        self._doc_page.update_groups([])
 
     @Slot()
     def _on_ocr_all(self):
-        logger.info("OCR todas las páginas solicitado")
-        self._civil_sect.civil_page.ocr_started()
+        logger.info("OCR todas las p\u00e1ginas solicitado")
+        self._doc_page.ocr_started()
         self._ocr.run_all()
 
     @Slot(int)
@@ -552,121 +609,94 @@ class MainWindow(QMainWindow):
     def _on_ocr_cancel(self):
         logger.info("OCR cancelado por usuario")
         self._ocr.cancel_all()
-        self._civil_sect.civil_page.ocr_finished()
+        self._doc_page.ocr_finished()
         self.statusBar().showMessage("OCR cancelado")
 
     @Slot(int, str, float)
     def _on_ocr_result(self, index: int, serial: str, conf: float):
-        logger.debug("Resultado OCR página %d: serial=%s conf=%.2f", index, serial, conf)
-        self._civil_sect.civil_page.set_ocr_result(index, serial, conf)
-        try:
-            self._civil_sect.bookmarks_page.set_ocr_result(index, serial, conf)
-        except Exception:
-            logger.exception("Error actualizando bookmarks_page")
-        self._imp_page.set_serial(index, serial, conf)
+        logger.debug("Resultado OCR p\u00e1gina %d: serial=%s conf=%.2f", index, serial, conf)
+        self._doc_page.set_ocr_result(index, serial, conf)
+        self._doc_page.set_serial(index, serial, conf)
         self._mark_dirty()
 
     @Slot(int, float, float, float, float)
     def _on_area_saved(self, page_index: int, x1: float, y1: float, x2: float, y2: float):
-        logger.info("Área OCR guardada: (%.2f, %.2f, %.2f, %.2f)", x1, y1, x2, y2)
+        logger.info("\u00c1rea OCR guardada: (%.2f, %.2f, %.2f, %.2f)", x1, y1, x2, y2)
         area = (x1, y1, x2, y2)
         for page in self._model.pages:
             page.ocr_area = area
         self.statusBar().showMessage(
-            f"Área OCR global guardada — {self._model.count} página(s)")
-
-    def _sync_bookmarks_data(self):
-        pages_data = []
-        for page in self._model.pages:
-            pages_data.append({
-                "index": page.index,
-                "label": page.final_label,
-                "image": page.display_image,
-            })
-        self._civil_sect.bookmarks_page.set_pages_data(pages_data)
+            f"\u00c1rea OCR global guardada \u2014 {self._model.count} p\u00e1gina(s)")
 
     @Slot(int, list)
     def _on_bookmark_updated(self, index: int, labels: list):
         first = labels[0][1] if labels else ""
         n = len(labels)
-        display = f"{first} 📑{n}" if n > 1 else first
-        self._imp_page.set_bookmark(index, display)
-        self._civil_sect.civil_page.set_bookmark(index, display)
-        self._ant_page.set_bookmark(index, display)
+        display = f"{first} \U0001f4d1{n}" if n > 1 else first
+        self._doc_page.set_bookmark(index, display)
         self._mark_dirty()
 
     @Slot()
     def _on_order_changed(self):
         pages = self._model.pages
-        self._imp_page.rebuild(pages)
-        self._civil_sect.civil_page.rebuild(pages)
-        self._ant_page.rebuild(pages)
-        self._sync_bookmarks_data()
+        self._doc_page.rebuild(pages)
         self._mark_dirty()
 
     @Slot(str)
     def _on_civil_export(self, folder: str):
-        logger.info("Exportación civil solicitada -> %s", folder)
-        self._civil_sect.civil_page.export_started()
+        logger.info("Exportaci\u00f3n civil solicitada -> %s", folder)
+        self._doc_page.export_started()
         job_id = self._export.export_civil(folder, "Registros Civiles")
         if not job_id:
-            self._civil_sect.civil_page.export_error("No hay páginas para exportar.")
+            self._doc_page.export_error("No hay p\u00e1ginas para exportar.")
 
     @Slot(str)
     def _on_civil_export_bookmark(self, folder: str):
-        logger.info("Exportación civil por marcador solicitada -> %s", folder)
-        cp = self._civil_sect.civil_page
-        cp.export_bookmark_started()
+        logger.info("Exportaci\u00f3n civil por marcador solicitada -> %s", folder)
+        self._doc_page.export_bookmark_started()
         job_id = self._export.export_civil_bookmark(folder, "Registros por marcador")
         if not job_id:
-            cp.export_bookmark_error("No hay páginas para exportar.")
+            self._doc_page.export_bookmark_error("No hay p\u00e1ginas para exportar.")
         else:
             def done(jid: str, path: str):
-                cp.export_bookmark_finished(path)
+                self._doc_page.export_bookmark_finished(path)
                 self._custom_handlers.pop(jid, None)
             def err(jid: str, msg: str):
-                cp.export_bookmark_error(msg)
+                self._doc_page.export_bookmark_error(msg)
                 self._custom_handlers.pop(jid, None)
             self._custom_handlers[job_id] = (done, err)
 
     @Slot(int, str)
     def _on_comment_set(self, index: int, text: str):
         self._model.set_comment(index, text)
+        preview = text[:40] + "\u2026" if len(text) > 40 else text
+        self._doc_page.set_comment(index, preview)
         self._mark_dirty()
 
     @Slot(str)
     def _on_export_original_pdf(self, folder: str):
-        logger.info("Exportación PDF original solicitada -> %s", folder)
-        from PySide6.QtWidgets import QApplication
-        mw = QApplication.instance().activeWindow()
-        cp = self._civil_sect.civil_page
-        ap = self._ant_page
-        cp.export_original_started()
-        ap.export_original_started()
+        logger.info("Exportaci\u00f3n PDF original solicitada -> %s", folder)
+        self._doc_page.export_original_started()
         job_id = self._export.export_original_pdf(folder, "PDF original")
         if not job_id:
-            cp.export_original_error("No hay páginas para exportar.")
-            ap.export_original_error("No hay páginas para exportar.")
+            self._doc_page.export_original_error("No hay p\u00e1ginas para exportar.")
         else:
             def done(jid: str, path: str):
-                cp.export_original_finished(path)
-                ap.export_original_finished(path)
+                self._doc_page.export_original_finished(path)
                 self._custom_handlers.pop(jid, None)
             def err(jid: str, msg: str):
-                cp.export_original_error(msg)
-                ap.export_original_error(msg)
+                self._doc_page.export_original_error(msg)
                 self._custom_handlers.pop(jid, None)
             self._custom_handlers[job_id] = (done, err)
 
     @Slot(list, str, int)
     def _on_bookmarks_export(self, pages_data: list, folder: str, dpi: int):
-        logger.info("Exportación con marcadores solicitada -> %s", folder)
+        logger.info("Exportaci\u00f3n con marcadores solicitada -> %s", folder)
         import cv2
         import fitz
         from PySide6.QtCore import QThreadPool, QRunnable
 
-        bp = self._civil_sect.bookmarks_page
-        bp.export_started()
+        self._doc_page.bookmarks_export_started()
 
         class _Worker(QRunnable):
             class S(QObject):
@@ -696,14 +726,14 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.s.error.emit(str(e))
 
-        output = Path(folder) / f"registros_marcadores.pdf"
+        output = Path(folder) / "registros_marcadores.pdf"
         output = self._unique_path(output)
         w = _Worker(pages_data, str(output), dpi)
-        w.s.progress.connect(bp.show_progress)
-        w.s.finished.connect(bp.export_finished)
-        w.s.finished.connect(lambda _: self._show_notification("PDF con marcadores generado"))
-        w.s.error.connect(bp.export_error)
-        w.s.error.connect(lambda msg: self._show_notification(msg, success=False))
+        w.s.progress.connect(self._doc_page.show_progress)
+        w.s.finished.connect(self._doc_page.bookmarks_export_finished)
+        w.s.finished.connect(lambda _: self.statusBar().showMessage("PDF con marcadores generado", 4000))
+        w.s.error.connect(self._doc_page.bookmarks_export_error)
+        w.s.error.connect(lambda msg: self.statusBar().showMessage(msg, 4000))
         QThreadPool.globalInstance().start(w)
 
     @staticmethod
@@ -719,12 +749,11 @@ class MainWindow(QMainWindow):
 
     @Slot(list, str)
     def _on_merge_pdfs(self, pdf_paths: list, output_path: str):
-        logger.info("Unión de PDFs solicitada -> %s", output_path)
+        logger.info("Uni\u00f3n de PDFs solicitada -> %s", output_path)
         from PySide6.QtCore import QThreadPool, QRunnable
         import fitz
 
-        mp = self._civil_sect.merge_page
-        mp.merge_started()
+        self._doc_page.merge_started()
 
         class _Worker(QRunnable):
             class S(QObject):
@@ -758,17 +787,17 @@ class MainWindow(QMainWindow):
 
         out_path = str(Path(output_path))
         w = _Worker(pdf_paths, out_path)
-        w.s.progress.connect(mp.show_progress)
-        w.s.finished.connect(mp.merge_finished)
-        w.s.finished.connect(lambda _: self._show_notification("PDFs unificados"))
-        w.s.error.connect(mp.merge_error)
-        w.s.error.connect(lambda msg: self._show_notification(msg, success=False))
+        w.s.progress.connect(self._doc_page.show_progress)
+        w.s.finished.connect(self._doc_page.merge_finished)
+        w.s.finished.connect(lambda _: self.statusBar().showMessage("PDFs unificados", 4000))
+        w.s.error.connect(self._doc_page.merge_error)
+        w.s.error.connect(lambda msg: self.statusBar().showMessage(msg, 4000))
         QThreadPool.globalInstance().start(w)
 
     @Slot(dict)
     def _on_ant_export(self, params: dict):
-        logger.info("Exportación antecedentes solicitada -> %s", params.get("folder"))
-        self._ant_page.export_started()
+        logger.info("Exportaci\u00f3n antecedentes solicitada -> %s", params.get("folder"))
+        self._doc_page.export_started()
         job_id = self._export.export_ant(
             params["folder"],
             params["serial_ini"],
@@ -778,37 +807,35 @@ class MainWindow(QMainWindow):
             "Antecedentes",
         )
         if not job_id:
-            self._ant_page.export_error("No hay grupos de páginas para exportar.")
+            self._doc_page.export_error("No hay grupos de p\u00e1ginas para exportar.")
 
     @Slot(dict)
     def _on_ant_export_single_pdf(self, params: dict):
-        logger.info("Antecedentes PDF único solicitado -> %s", params.get("folder"))
-        ap = self._ant_page
-        ap.export_single_started()
+        logger.info("Antecedentes PDF \u00fanico solicitado -> %s", params.get("folder"))
+        self._doc_page.export_single_started()
         job_id = self._export.export_ant_single_pdf(
             params["folder"],
             params["serial_ini"],
             params["padding"],
             params.get("desde", 0),
             params.get("hasta", 0),
-            "Antecedentes PDF único",
+            "Antecedentes PDF \u00fanico",
         )
         if not job_id:
-            ap.export_single_error("No hay páginas para exportar.")
+            self._doc_page.export_single_error("No hay p\u00e1ginas para exportar.")
         else:
             def done(jid: str, path: str):
-                ap.export_single_finished(path)
+                self._doc_page.export_single_finished(path)
                 self._custom_handlers.pop(jid, None)
             def err(jid: str, msg: str):
-                ap.export_single_error(msg)
+                self._doc_page.export_single_error(msg)
                 self._custom_handlers.pop(jid, None)
             self._custom_handlers[job_id] = (done, err)
 
     @Slot(dict)
     def _on_ant_export_split_bookmark(self, params: dict):
         logger.info("Antecedentes por marcador solicitado -> %s", params.get("folder"))
-        ap = self._ant_page
-        ap.export_split_started()
+        self._doc_page.export_split_started()
         job_id = self._export.export_ant_split_bookmark(
             params["folder"],
             params["serial_ini"],
@@ -818,13 +845,13 @@ class MainWindow(QMainWindow):
             "Antecedentes por marcador",
         )
         if not job_id:
-            ap.export_split_error("No hay páginas con marcadores para dividir.")
+            self._doc_page.export_split_error("No hay p\u00e1ginas con marcadores para dividir.")
         else:
             def done(jid: str, path: str):
-                ap.export_split_finished(path)
+                self._doc_page.export_split_finished(path)
                 self._custom_handlers.pop(jid, None)
             def err(jid: str, msg: str):
-                ap.export_split_error(msg)
+                self._doc_page.export_split_error(msg)
                 self._custom_handlers.pop(jid, None)
             self._custom_handlers[job_id] = (done, err)
 
@@ -848,25 +875,13 @@ class MainWindow(QMainWindow):
         if job_id in self._custom_handlers:
             done, _ = self._custom_handlers[job_id]
             done(job_id, path)
-            for j in self._export.all_jobs():
-                if j.id == job_id:
-                    self._jobs_page.update_job(j)
-                    break
         else:
-            for j in self._export.all_jobs():
-                if j.id == job_id:
-                    self._jobs_page.update_job(j)
-                    if j.job_type.value == "civil":
-                        self._civil_sect.civil_page.export_finished(path)
-                    else:
-                        self._ant_page.export_finished(path)
-                    break
-        self._show_notification("Exportación completada")
-
-    @Slot(str, str)
-    def _on_error(self, msg: str):
-        logger.error("Error: %s", msg)
-        self.statusBar().showMessage(f"Error: {msg}")
+            self._doc_page.export_finished(path)
+        for j in self._export.all_jobs():
+            if j.id == job_id:
+                self._jobs_page.update_job(j)
+                break
+        self.statusBar().showMessage("Exportaci\u00f3n completada", 4000)
 
     @Slot(str, str)
     def _on_job_error(self, job_id: str, msg: str):
@@ -874,30 +889,21 @@ class MainWindow(QMainWindow):
         if job_id in self._custom_handlers:
             _, err = self._custom_handlers[job_id]
             err(job_id, msg)
-            for j in self._export.all_jobs():
-                if j.id == job_id:
-                    self._jobs_page.update_job(j)
-                    break
         else:
-            for j in self._export.all_jobs():
-                if j.id == job_id:
-                    self._jobs_page.update_job(j)
-                    if j.job_type.value == "civil":
-                        self._civil_sect.civil_page.export_error(msg)
-                    else:
-                        self._ant_page.export_error(msg)
-                    break
-        self._show_notification(msg, success=False)
+            self._doc_page.export_error(msg)
+        for j in self._export.all_jobs():
+            if j.id == job_id:
+                self._jobs_page.update_job(j)
+                break
+        self.statusBar().showMessage(msg, 4000)
 
     @Slot(int)
     def _on_correction_done(self, index: int):
-        logger.info("Corrección completada para página %d", index)
+        logger.info("Correcci\u00f3n completada para p\u00e1gina %d", index)
         page = self._model.get(index)
         if page:
             img = page.display_image
-            self._imp_page.update_page(index, img)
-            self._civil_sect.civil_page.update_page(index, img)
-            self._ant_page.update_page(index, img)
+            self._doc_page.update_page(index, img)
         self._mark_dirty()
 
     @Slot(str)
@@ -908,24 +914,9 @@ class MainWindow(QMainWindow):
             if j.id == job_id:
                 self._jobs_page.update_job(j)
                 break
-        self._show_notification("Exportación cancelada", success=False)
+        self.statusBar().showMessage("Exportaci\u00f3n cancelada", 4000)
 
-    # ── Non-blocking notification ──────────────────────────────
-
-    def _show_notification(self, text: str, success: bool = True):
-        color = SUCCESS if success else DANGER
-        self._notif_label.setText(text)
-        self._notif_label.setStyleSheet(
-            f"QLabel {{ background: {SURFACE2}; border: 1px solid {color}; "
-            f"border-radius: 4px; padding: 0 10px; font-size:8pt; color:{color}; }}"
-        )
-        self._notif_label.setVisible(True)
-        self._notif_timer.start(4000)
-
-    def _hide_notification(self):
-        self._notif_label.setVisible(False)
-
-    # ── Process dialog updates ─────────────────────────────────
+    # Process dialog updates
 
     def _safe_process_dialog(self) -> ProcessListDialog | None:
         if self._process_dialog is None:
@@ -956,7 +947,7 @@ class MainWindow(QMainWindow):
         if dlg:
             dlg.set_job_done(job_id, path)
         self._update_process_btn()
-        self._show_notification("Proceso completado")
+        self.statusBar().showMessage("Proceso completado", 4000)
 
     @Slot(str, str)
     def _on_process_error(self, job_id: str, msg: str):
@@ -964,7 +955,7 @@ class MainWindow(QMainWindow):
         if dlg:
             dlg.set_job_error(job_id, msg)
         self._update_process_btn()
-        self._show_notification(msg, success=False)
+        self.statusBar().showMessage(msg, 4000)
 
     @Slot(str)
     def _on_process_cancelled(self, job_id: str):
@@ -972,7 +963,7 @@ class MainWindow(QMainWindow):
         if dlg:
             dlg.set_job_cancelled(job_id)
         self._update_process_btn()
-        self._show_notification("Proceso cancelado", success=False)
+        self.statusBar().showMessage("Proceso cancelado", 4000)
 
     def _update_process_btn(self):
         active = sum(1 for j in self._export.all_jobs()
@@ -992,16 +983,16 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_export_cancel(self, job_id: str):
-        logger.info("Cancelación de exportación solicitada: %s", job_id)
+        logger.info("Cancelaci\u00f3n de exportaci\u00f3n solicitada: %s", job_id)
         self._export.cancel_export(job_id)
-        self.statusBar().showMessage("Cancelando exportación…")
+        self.statusBar().showMessage("Cancelando exportaci\u00f3n\u2026")
 
     @Slot(int)
     def _open_fullscreen(self, index: int):
         pages = self._model.pages
         if not pages:
             return
-        self._fullscreen_viewer = FullscreenViewer(pages, start=index, parent=self)
+        self._fullscreen_viewer = FullscreenViewer(pages, start=index, parent=self, config=self._cfg)
         self._fullscreen_viewer.bookmark_changed.connect(self._scan.set_bookmark)
         self._fullscreen_viewer.comment_changed.connect(self._on_comment_set)
         self._fullscreen_viewer.show()
@@ -1011,7 +1002,7 @@ class MainWindow(QMainWindow):
         if self._dirty:
             ret = QMessageBox.question(
                 self, "Guardar cambios",
-                "Hay cambios sin guardar. ¿Desea guardarlos?",
+                "Hay cambios sin guardar. \u00bfDesea guardarlos?",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
             )
             if ret == QMessageBox.Save:

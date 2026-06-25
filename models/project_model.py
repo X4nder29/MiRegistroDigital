@@ -4,7 +4,7 @@ import zipfile
 import io
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 import numpy as np
 import cv2
 from models.page_data import PageData
@@ -44,18 +44,19 @@ def save(path: Path, pages: list[PageData]) -> None:
             }
             metadata["pages"].append(entry)
             success, buf = cv2.imencode(".jpg", p.original_image,
-                                        [cv2.IMWRITE_JPEG_QUALITY, 90])
+                                        [cv2.IMWRITE_JPEG_QUALITY, 95])
             if success:
                 zf.writestr(f"pages/{i:04d}.jpg", buf.tobytes())
 
         zf.writestr("metadata.json", json.dumps(metadata, indent=2, ensure_ascii=False))
 
 
-def load(path: Path) -> list[PageData]:
+def load(path: Path, progress_callback: Optional[Callable[[int, int], None]] = None) -> list[PageData]:
     with zipfile.ZipFile(path, "r") as zf:
         metadata = json.loads(zf.read("metadata.json"))
         pages = []
-        for entry in metadata["pages"]:
+        total = len(metadata["pages"])
+        for i, entry in enumerate(metadata["pages"]):
             idx = entry["index"]
             img_data = zf.read(f"pages/{idx:04d}.jpg")
             buf = np.frombuffer(img_data, dtype=np.uint8)
@@ -89,6 +90,8 @@ def load(path: Path) -> list[PageData]:
                 ocr_area=ocr_area,
             )
             pages.append(page)
+            if progress_callback:
+                progress_callback(i + 1, total)
     return pages
 
 

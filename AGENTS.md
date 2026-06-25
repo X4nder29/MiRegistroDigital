@@ -17,7 +17,8 @@ No hay tests, linter, typechecker ni CI configurados.
 ## Arquitectura
 
 - **Entrypoint**: `main.py` → `views/main_window.py:MainWindow`. `MainWindow` es el pegamento MVC que conecta señales entre páginas y controladores.
-- **Dos UIs paralelas**: `views/` (Widgets PySide6 — activa) y `backend/` + `qml/` (QML QtQuick). La lógica de negocio duplicada en ambos lados. Cambios en `controllers/` deben replicarse en `backend/controllers/`.
+- **UI unificada**: `views/document_page.py` — sidebar con 3 items (Documentos, Trabajos, Ajustes). `DocumentPage` integra importación, corrección, OCR, marcadores/comentarios y exportación en una sola vista con toolbar + thumbnails + viewer + panel derecho de 4 tabs (Info/Corrección/OCR/Exportar).
+- **Dos UIs paralelas (legacy)**: `views/` (Widgets PySide6 — activa) y `backend/` + `qml/` (QML QtQuick). La lógica de negocio duplicada en ambos lados. Cambios en `controllers/` deben replicarse en `backend/controllers/`.
 - **Patrón señal/controlador**: Vistas emiten `Signal`, `MainWindow` las conecta a controladores (`QObject`). Exportación usa `QRunnable` + `QThreadPool` para concurrencia.
 - **Pipeline imágenes**: Todo el stack usa `numpy.ndarray` BGR (OpenCV). Las imágenes nunca se guardan en disco durante el flujo — residen en `ScanModel` en memoria.
 - **Config persistente**: `ConfigModel` guarda en `~/.miregistrodigital/config.json`. Se persiste automáticamente al cerrar (`MainWindow.closeEvent`).
@@ -31,7 +32,7 @@ No hay tests, linter, typechecker ni CI configurados.
 
 ## Peculiaridades
 
-- **Archivos legacy**: `controllers/antecedentes_controller.py`, `controllers/civil_controller.py`, `controllers/file_import_controller.py` sin usar. La lógica activa está en `controllers/export_controller.py` y `controllers/ocr_controller.py`. Ídem `views/*_view.py` vs `views/*_page.py`.
+- **Archivos legacy**: `views/scan_page.py`, `views/registos_section.py`, `views/antecedentes_page.py` existen pero ya no se importan. La UI activa es `document_page.py`. Ídem `controllers/antecedentes_controller.py`, `controllers/civil_controller.py`, `controllers/file_import_controller.py` sin usar. La lógica activa está en `controllers/export_controller.py` y `controllers/ocr_controller.py`.
 - **OCR**: EasyOCR con GPU configurable (`ConfigModel: ocr.gpu`, default CPU). Descarga modelos ~1.5GB al primer uso. `parallel_workers` default 4.
 - **Sin tests**: Toda verificación es manual via `python main.py`.
 - **Windows-only**: `pytwain` (TWAIN), batch files, paths Windows. Sin soporte cross-platform.
