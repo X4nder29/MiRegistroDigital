@@ -96,7 +96,7 @@ def ndarray_to_qpixmap(image: np.ndarray, max_size: Optional[Tuple[int, int]] = 
     else:
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
-    return QPixmap.fromImage(qimg.copy())
+    return QPixmap.fromImage(qimg)
 
 
 def overlay_comment(image: np.ndarray, text: str) -> np.ndarray:

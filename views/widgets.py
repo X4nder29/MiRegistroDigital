@@ -1,5 +1,6 @@
 """Widgets reutilizables."""
 from __future__ import annotations
+from collections import OrderedDict
 import cv2
 import numpy as np
 from PySide6.QtWidgets import (
@@ -14,6 +15,7 @@ from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter, QWhee
 from PySide6.QtCore import QUrl
 
 from utils.image_utils import ndarray_to_qpixmap
+from models.config_model import ConfigModel
 from views.theme import (
     SURFACE, SURFACE2, SURFACE3, BORDER,
     ACCENT, TEXT, TEXT_SEC, TEXT_DIM, BG, SUCCESS, DANGER, WARNING, INFO,
@@ -42,6 +44,18 @@ class ImageViewer(QLabel):
         self._zoom_level = 1.0
         self._panning = False
         self._pan_start = QPoint()
+        self._zoom_cache: dict[tuple[int, int], QPixmap] = {}
+
+    def set_pixmap(self, pixmap: QPixmap | None):
+        self._pixmap = pixmap
+        if pixmap is None:
+            self.setText("Sin imagen")
+            return
+        self.setText("")
+        if not self._zoom_enabled:
+            self._zoom_level = 1.0
+        self._panning = False
+        self._rescale()
 
     def enable_area_selection(self, enable: bool = True):
         if self._area_preview and enable:
@@ -100,16 +114,12 @@ class ImageViewer(QLabel):
             self._rescale()
 
     def set_image(self, image: np.ndarray | None):
+        self._zoom_cache.clear()
         if image is None:
-            self._pixmap = None
+            self.set_pixmap(None)
             self.setText("Sin imagen")
             return
-        self._pixmap = ndarray_to_qpixmap(image)
-        self.setText("")
-        if not self._zoom_enabled:
-            self._zoom_level = 1.0
-        self._panning = False
-        self._rescale()
+        self.set_pixmap(ndarray_to_qpixmap(image))
 
     def wheelEvent(self, event: QWheelEvent):
         if self._zoom_enabled and event.modifiers() & Qt.ControlModifier:
@@ -159,6 +169,21 @@ class ImageViewer(QLabel):
             self._panning = False
             self.setCursor(Qt.ArrowCursor)
             return
+        if self._selecting and self._rubber_band and self._rubber_band.isVisible() and event.button() == Qt.LeftButton:
+            rect = QRect(self._origin, event.pos()).normalized()
+            self._rubber_band.hide()
+            self._origin = None
+            self.enable_area_selection(False)
+            prect = self._pixmap_rect()
+            if prect.isValid() and rect.width() > 10 and rect.height() > 10:
+                clipped = rect.intersected(prect)
+                if clipped.isValid() and clipped.width() > 5 and clipped.height() > 5:
+                    x1 = (clipped.left() - prect.left()) / prect.width()
+                    y1 = (clipped.top() - prect.top()) / prect.height()
+                    x2 = (clipped.right() - prect.left()) / prect.width()
+                    y2 = (clipped.bottom() - prect.top()) / prect.height()
+                    self.area_selected.emit(x1, y1, x2, y2)
+            return
         super().mouseReleaseEvent(event)
 
     def _find_scroll_area(self):
@@ -186,24 +211,6 @@ class ImageViewer(QLabel):
         x = (sw - dw) // 2
         y = (sh - dh) // 2
         return QRect(x, y, dw, dh)
-
-    def mouseReleaseEvent(self, event):
-        if self._selecting and self._rubber_band and self._rubber_band.isVisible() and event.button() == Qt.LeftButton:
-            rect = QRect(self._origin, event.pos()).normalized()
-            self._rubber_band.hide()
-            self._origin = None
-            self.enable_area_selection(False)
-            prect = self._pixmap_rect()
-            if prect.isValid() and rect.width() > 10 and rect.height() > 10:
-                clipped = rect.intersected(prect)
-                if clipped.isValid() and clipped.width() > 5 and clipped.height() > 5:
-                    x1 = (clipped.left() - prect.left()) / prect.width()
-                    y1 = (clipped.top() - prect.top()) / prect.height()
-                    x2 = (clipped.right() - prect.left()) / prect.width()
-                    y2 = (clipped.bottom() - prect.top()) / prect.height()
-                    self.area_selected.emit(x1, y1, x2, y2)
-            return
-        super().mouseReleaseEvent(event)
 
     def set_debug_ocr_rect(self, rect: tuple[float, float, float, float] | None):
         self._debug_rect = rect
@@ -247,11 +254,17 @@ class ImageViewer(QLabel):
             scale = fit_scale * self._zoom_level
             new_w = max(1, int(pw * scale))
             new_h = max(1, int(ph * scale))
-            self.setPixmap(self._pixmap.scaled(
-                new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            key = (id(self._pixmap), new_w, new_h)
+            if key in self._zoom_cache:
+                scaled = self._zoom_cache[key]
+            else:
+                scaled = self._pixmap.scaled(
+                    new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self._zoom_cache[key] = scaled
+            QLabel.setPixmap(self, scaled)
             self.setFixedSize(new_w, new_h)
         else:
-            self.setPixmap(self._pixmap.scaled(
+            QLabel.setPixmap(self, self._pixmap.scaled(
                 self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
             self.setMinimumSize(0, 0)
             self.setMaximumSize(QSize(16777215, 16777215))
@@ -447,7 +460,7 @@ class FullscreenViewer(QDialog):
     bookmark_changed = Signal(int, list)
     comment_changed  = Signal(int, str)
 
-    def __init__(self, pages_data: list, start: int = 0, parent=None):
+    def __init__(self, pages_data: list, start: int = 0, parent=None, config: ConfigModel | None = None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("Vista completa")
         self.resize(1000, 750)
@@ -455,6 +468,7 @@ class FullscreenViewer(QDialog):
         self._pages = pages_data
         self._idx   = start
         self._dual_mode = False
+        self._config = config
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -483,6 +497,13 @@ class FullscreenViewer(QDialog):
         main_layout.addWidget(self._sidebar)
 
         self._setup_shortcuts()
+        self._pixmap_cache: OrderedDict[int, QPixmap] = OrderedDict()
+        self._MAX_CACHE = 10
+        self._cm_thumb: np.ndarray | None = None
+        self._cm_preview_timer = QTimer(self)
+        self._cm_preview_timer.setSingleShot(True)
+        self._cm_preview_timer.setInterval(120)
+        self._cm_preview_timer.timeout.connect(self._cm_do_preview)
         self._show_current()
 
     # ── Bookmark sidebar ──
@@ -539,11 +560,11 @@ class FullscreenViewer(QDialog):
         b_add = QPushButton("➕ Añadir")
         b_add.setFixedHeight(30)
         b_add.clicked.connect(self._bm_add)
-        b_ed = QPushButton("✏️")
-        b_ed.setFixedSize(30, 30)
+        b_ed = QPushButton("✏️ Editar")
+        b_ed.setFixedHeight(30)
         b_ed.clicked.connect(self._bm_edit)
-        b_rm = QPushButton("🗑️")
-        b_rm.setFixedSize(30, 30)
+        b_rm = QPushButton("🗑️ Quitar")
+        b_rm.setFixedHeight(30)
         b_rm.clicked.connect(self._bm_remove)
         for b in (b_add, b_ed, b_rm):
             b.setStyleSheet(
@@ -764,6 +785,7 @@ class FullscreenViewer(QDialog):
         return f
 
     def _setup_shortcuts(self):
+        bk_key = self._config.get("shortcuts", "fullscreen_bookmark", "Insert") if self._config else "Insert"
         pairs = [
             (Qt.Key_Left,             self._prev),
             (Qt.Key_Right,            self._next),
@@ -772,7 +794,7 @@ class FullscreenViewer(QDialog):
             (Qt.CTRL | Qt.Key_0,      self._zoom_fit),
             (Qt.CTRL | Qt.Key_D,      self._btn_dual.toggle),
             (Qt.CTRL | Qt.Key_M,      self._toggle_comment_sidebar),
-            (Qt.CTRL | Qt.Key_B,      self._quick_bookmark),
+            (QKeySequence(bk_key),    self._quick_bookmark),
             (Qt.Key_Escape,           self._on_escape),
         ]
         for seq, slot in pairs:
@@ -858,6 +880,7 @@ class FullscreenViewer(QDialog):
         p.bookmarks = labels
         p.bookmark = labels[0][1] if labels else ""
         self.bookmark_changed.emit(p.index, labels)
+        self._refresh_bookmark_panel()
         self._hide_bookmark_sidebar()
 
     # ── Comment panel logic ──
@@ -871,6 +894,14 @@ class FullscreenViewer(QDialog):
         self._cm_preview_lbl.setVisible(False)
         self._cm_preview_check.setChecked(False)
         self._cm_image = p.display_image
+        h, w = self._cm_image.shape[:2]
+        scale = min(240 / w, 110 / h, 1.0)
+        if scale < 1.0:
+            self._cm_thumb = cv2.resize(
+                self._cm_image, (int(w * scale), int(h * scale)),
+                interpolation=cv2.INTER_AREA)
+        else:
+            self._cm_thumb = self._cm_image
 
     def _cm_on_text_changed(self):
         text = self._cm_editor.toPlainText()
@@ -881,21 +912,22 @@ class FullscreenViewer(QDialog):
             self._cm_editor.blockSignals(False)
             text = text[:500]
         self._cm_counter.setText(f"Caracteres: {len(text)}/500")
-        if self._cm_preview_check.isChecked() and self._cm_image is not None:
+        if self._cm_preview_check.isChecked() and self._cm_thumb is not None:
+            self._cm_preview_timer.start()
+
+    def _cm_do_preview(self):
+        text = self._cm_editor.toPlainText()
+        if self._cm_thumb is not None:
             self._cm_render_preview(text)
 
     def _cm_toggle_preview(self, checked: bool):
-        if checked and self._cm_image is not None:
+        if checked and self._cm_thumb is not None:
             self._cm_render_preview(self._cm_editor.toPlainText())
         self._cm_preview_lbl.setVisible(checked)
 
     def _cm_render_preview(self, text: str):
         from utils.image_utils import overlay_comment
-        img = overlay_comment(self._cm_image, text)
-        h, w = img.shape[:2]
-        scale = min(240 / w, 110 / h, 1.0)
-        if scale < 1.0:
-            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        img = overlay_comment(self._cm_thumb, text)
         px = ndarray_to_qpixmap(img)
         self._cm_preview_lbl.setPixmap(px)
 
@@ -925,18 +957,27 @@ class FullscreenViewer(QDialog):
     def _show_current(self):
         if not self._pages:
             return
+        key: int | tuple = self._idx
         if self._dual_mode:
+            key = (self._idx, True)
+        if key in self._pixmap_cache:
+            self._pixmap_cache.move_to_end(key)
+            self._viewer.set_pixmap(self._pixmap_cache[key])
+        elif self._dual_mode:
             self._show_dual()
         else:
             p = self._pages[self._idx]
-            self._viewer.set_image(p.display_image)
+            px = ndarray_to_qpixmap(p.display_image)
+            self._pixmap_cache[key] = px
+            if len(self._pixmap_cache) > self._MAX_CACHE:
+                self._pixmap_cache.popitem(last=False)
+            self._viewer.set_pixmap(px)
         self._page_edit.setText(str(self._idx + 1))
         if self._bm_sidebar.isVisible():
             self._bm_title.setText(f"🔖 Marcadores — Pág {self._idx + 1}")
             self._refresh_bookmark_panel()
         if self._cm_sidebar.isVisible():
             self._cm_title.setText(f"💬 Comentario — Pág {self._idx + 1}")
-            self._refresh_comment_panel()
 
     def _show_dual(self):
         p1 = self._pages[self._idx]
@@ -953,9 +994,15 @@ class FullscreenViewer(QDialog):
             if h2 != target_h:
                 s = target_h / h2
                 img2 = cv2.resize(img2, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-            self._viewer.set_image(np.hstack([img1, img2]))
+            img = np.hstack([img1, img2])
         else:
-            self._viewer.set_image(img1)
+            img = img1
+        px = ndarray_to_qpixmap(img)
+        key = (self._idx, True)
+        self._pixmap_cache[key] = px
+        if len(self._pixmap_cache) > self._MAX_CACHE:
+            self._pixmap_cache.popitem(last=False)
+        self._viewer.set_pixmap(px)
 
     def _quick_bookmark(self):
         p = self._pages[self._idx]
@@ -968,8 +1015,8 @@ class FullscreenViewer(QDialog):
             labels = [(1, label)] if label else []
             p.bookmarks = labels
             p.bookmark = label
-            self._show_current()
             self.bookmark_changed.emit(p.index, labels)
+            self._refresh_bookmark_panel()
 
     # ── Navigation ──
 
