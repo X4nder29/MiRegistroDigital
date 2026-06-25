@@ -7,8 +7,7 @@ from PySide6.QtCore import QObject, Signal, QRunnable, QThreadPool, Slot
 from models.scan_model import ScanModel, PageData
 from models.job_model import Job, JobType, JobStatus
 from models.config_model import ConfigModel
-from utils.file_utils import (sanitize, serial_str, ts_name, unique,
-                                images_to_pdf_bytes, build_zip)
+from utils.file_utils import (sanitize, serial_str, ts_name, unique, build_zip)
 
 logger = logging.getLogger("docscan.export")
 
@@ -44,7 +43,7 @@ class _CivilWorker(QRunnable):
                     base = f"{base}_{used[base]}"
                 else:
                     used[base] = 0
-                entries[base + ".pdf"] = images_to_pdf_bytes([page.display_image], self.dpi)
+                entries[base + ".pdf"] = _build_pdf_bytes([page], self.dpi)
             build_zip(entries, self.zip_path)
             self.s.done.emit(self.job.id, str(self.zip_path))
         except Exception as e:
@@ -79,8 +78,7 @@ class _AntWorker(QRunnable):
                     return
                 self.s.progress.emit(self.job.id, i + 1, len(self.groups))
                 name = serial_str(self.serial_ini + i, self.padding) + ".pdf"
-                entries[name] = images_to_pdf_bytes(
-                    [p.display_image for p in group], self.dpi)
+                entries[name] = _build_pdf_bytes(group, self.dpi)
             build_zip(entries, self.zip_path)
             self.s.done.emit(self.job.id, str(self.zip_path))
         except Exception as e:
@@ -119,7 +117,7 @@ class _BookmarkWorker(QRunnable):
                     base = f"{base}_{used[base]}"
                 else:
                     used[base] = 0
-                entries[base + ".pdf"] = images_to_pdf_bytes([page.display_image], self.dpi)
+                entries[base + ".pdf"] = _build_pdf_bytes([page], self.dpi)
             build_zip(entries, self.zip_path)
             self.s.done.emit(self.job.id, str(self.zip_path))
         except Exception as e:
@@ -164,8 +162,7 @@ class _AntBookmarkWorker(QRunnable):
                     base = f"{base}_{used[base]}"
                 else:
                     used[base] = 0
-                entries[base + ".pdf"] = images_to_pdf_bytes(
-                    [p.display_image for p in group], self.dpi)
+                entries[base + ".pdf"] = _build_pdf_bytes(group, self.dpi)
             build_zip(entries, self.zip_path)
             self.s.done.emit(self.job.id, str(self.zip_path))
         except Exception as e:
@@ -293,17 +290,11 @@ class ExportController(QObject):
             @Slot()
             def run(self):
                 try:
-                    import cv2
                     import fitz
-                    doc = fitz.Document()
+                    doc = _build_pdf_doc(self.pages, self.dpi)
                     tocs = []
                     for i, page in enumerate(self.pages):
                         self.s.progress.emit(self.job.id, i + 1, len(self.pages))
-                        img = page.display_image
-                        h, w = img.shape[:2]
-                        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                        p = doc.new_page(width=w, height=h)
-                        p.insert_image(p.rect, stream=buf.tobytes())
                         bm = page.bookmarks if page.bookmarks else ([page.bookmark] if page.bookmark else [])
                         if bm:
                             for lvl, title in bm:
@@ -472,16 +463,26 @@ class ExportController(QObject):
                                     tocs.append([lvl, title, i + 1])
                         src.close()
                     else:
-                        import cv2
                         from utils.image_utils import overlay_comment
+                        pages_with_comment = []
+                        for p in self.pages:
+                            if p.comment:
+                                p = PageData(
+                                    index=p.index,
+                                    original_image=p.original_image,
+                                    corrected_image=p.corrected_image,
+                                    source_path=p.source_path,
+                                    source_page=p.source_page,
+                                    comment=p.comment,
+                                    bookmarks=p.bookmarks,
+                                    bookmark=p.bookmark,
+                                )
+                                p.original_image = overlay_comment(p.original_image, p.comment)
+                                p.corrected_image = overlay_comment(p.corrected_image, p.comment) if p.corrected_image is not None else None
+                            pages_with_comment.append(p)
+                        _append_to_doc(doc, pages_with_comment, 200)
                         for i, page in enumerate(self.pages):
                             self.s.progress.emit(self.job.id, i + 1, len(self.pages))
-                            img = overlay_comment(page.original_image, page.comment)
-                            if img.ndim == 2 or img.shape[2] == 1:
-                                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-                            _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                            p = doc.new_page(width=img.shape[1], height=img.shape[0])
-                            p.insert_image(p.rect, stream=buf.tobytes())
                             bm = page.bookmarks if page.bookmarks else ([page.bookmark] if page.bookmark else [])
                             if bm:
                                 for lvl, title in bm:
@@ -524,3 +525,68 @@ class ExportController(QObject):
         if p.bookmarks:
             return p.bookmarks[0][1]
         return p.bookmark
+
+
+# ── PDF build helpers ────────────────────────────────────────────────
+
+def _build_pdf_bytes(pages: list[PageData], dpi: int) -> bytes:
+    """Build PDF bytes from page data, using direct source page copy when possible."""
+    import fitz
+    doc = fitz.Document()
+    _append_to_doc(doc, pages, dpi)
+    data = doc.tobytes(garbage=4, deflate=True)
+    doc.close()
+    return data
+
+
+def _build_pdf_doc(pages: list[PageData], dpi: int) -> fitz.Document:
+    """Build a fitz Document from page data, using direct source page copy when possible."""
+    import fitz
+    doc = fitz.Document()
+    _append_to_doc(doc, pages, dpi)
+    return doc
+
+
+def _append_to_doc(doc: fitz.Document, pages: list[PageData], dpi: int):
+    """Append pages to an existing fitz Document, grouping by source for direct copy."""
+    from collections import defaultdict
+    from pathlib import Path
+
+    groups: dict[str, list[PageData]] = defaultdict(list)
+    for p in pages:
+        groups[p.source_path if p.source_path else ""].append(p)
+
+    for src, src_pages in groups.items():
+        is_pdf = src.lower().endswith('.pdf') if src else False
+        src_exists = Path(src).exists() if src else False
+        has_corrections = any(p.corrected_image is not None for p in src_pages)
+
+        if is_pdf and src_exists and not has_corrections:
+            _merge_pdf_src(doc, src, src_pages)
+        else:
+            _merge_images(doc, src_pages)
+
+
+def _merge_pdf_src(doc: fitz.Document, src: str, pages: list[PageData]):
+    """Copy pages directly from a source PDF (lossless)."""
+    import fitz
+    src_doc = fitz.open(src)
+    nums = [p.source_page for p in pages if p.source_page >= 0]
+    if nums:
+        if len(nums) == 1:
+            doc.insert_pdf(src_doc, from_page=nums[0], to_page=nums[0])
+        else:
+            src_doc.select(nums)
+            doc.insert_pdf(src_doc)
+    src_doc.close()
+
+
+def _merge_images(doc: fitz.Document, pages: list[PageData]):
+    """Encode pages as JPEG and insert (lossy fallback for non-PDF sources)."""
+    import cv2
+    for p in pages:
+        img = p.display_image
+        h, w = img.shape[:2]
+        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        new_page = doc.new_page(width=w, height=h)
+        new_page.insert_image(new_page.rect, stream=buf.tobytes())
