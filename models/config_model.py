@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULTS: dict[str, Any] = {
+    "import":       {"pdf_dpi": 300},
     "correction":   {"auto_perspective": False, "auto_rotation": False},
     "ocr":          {"languages": ["es", "en"], "margin_right_pct": 0.15,
                      "confidence_threshold": 0.4, "gpu": False, "parallel_workers": 4},
@@ -11,6 +12,7 @@ DEFAULTS: dict[str, Any] = {
                      "pdf_dpi": 200},
     "antecedentes": {"serial_inicial": 1, "serial_padding": 5},
     "ui":           {"last_page": "import"},
+    "shortcuts":    {"fullscreen_bookmark": "Insert"},
 }
 CONFIG_PATH = Path.home() / ".miregistrodigital" / "config.json"
 

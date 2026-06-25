@@ -210,7 +210,7 @@ class ScanController(QObject):
     @Slot(list)
     def import_files(self, paths: list[Path]):
         logger.info("Importando %d archivos", len(paths))
-        w = _ImportWorker(paths, self._cfg.get("output", "pdf_dpi", 200))
+        w = _ImportWorker(paths, self._cfg.get("import", "pdf_dpi", 300))
         w.s.page.connect(self._on_page_src)
         w.s.progress.connect(self.import_progress)
         w.s.done.connect(self.import_done)
@@ -288,7 +288,7 @@ class ScanController(QObject):
     def _process_and_add(self, image: np.ndarray, src: str, src_page: int = -1,
                          comment: str = "", bookmarks: list | None = None):
         bmarks = bookmarks or []
-        page = self._m.add_page(image, 300, src, source_page=src_page,
+        page = self._m.add_page(image, self._cfg.get("import", "pdf_dpi", 300), src, source_page=src_page,
                                 comment=comment, bookmarks=bmarks)
         logger.debug("Página añadida al modelo: index=%d, src=%s, comment=%s, bookmarks=%d",
                      page.index, src, comment[:30] if comment else "", len(bmarks))
