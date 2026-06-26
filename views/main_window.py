@@ -26,7 +26,6 @@ from controllers.scan_controller import ScanController
 from controllers.ocr_controller import OCRController
 from controllers.export_controller import ExportController
 from views.document_page import DocumentPage
-from views.jobs_page import JobsPage
 from views.settings_page import SettingsPage
 from views.widgets import FullscreenViewer, ProcessListDialog
 from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2, INFO, WARNING
@@ -36,7 +35,6 @@ logger = logging.getLogger("docscan.main")
 
 _NAV = [
     ("documentos",   "\U0001f4c4  Documentos"),
-    ("jobs",         "\U0001f504  Trabajos"),
     ("settings",     "\u2699\ufe0f  Ajustes"),
 ]
 
@@ -161,10 +159,9 @@ class MainWindow(QMainWindow):
 
         self._stack = QStackedWidget()
         self._doc_page   = DocumentPage()
-        self._jobs_page  = JobsPage()
         self._sett_page  = SettingsPage(self._cfg)
 
-        for page in (self._doc_page, self._jobs_page, self._sett_page):
+        for page in (self._doc_page, self._sett_page):
             self._stack.addWidget(page)
 
         mid_layout.addWidget(self._stack)
@@ -413,7 +410,7 @@ class MainWindow(QMainWindow):
         return sidebar
 
     def _navigate(self, key: str):
-        idx = {"documentos": 0, "jobs": 1, "settings": 2}
+        idx = {"documentos": 0, "settings": 1}
         for k, btn in self._nav_btns.items():
             btn.setChecked(k == key)
         self._stack.setCurrentIndex(idx.get(key, 0))
@@ -493,7 +490,6 @@ class MainWindow(QMainWindow):
         self._export.job_cancelled.connect(self._on_process_cancelled)
 
         # Other pages
-        self._jobs_page.cancel_requested.connect(self._on_export_cancel)
         self._sett_page.settings_saved.connect(
             lambda: self.statusBar().showMessage("Configuraci\u00f3n guardada", 3000))
 
@@ -858,16 +854,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_job_created(self, job: Job):
         logger.info("Trabajo creado: %s [%s]", job.id, job.label)
-        self._jobs_page.add_job(job)
         self.statusBar().showMessage(f"Trabajo iniciado: {job.label}")
-
-    @Slot(str, int, int)
-    def _on_job_progress(self, job_id: str, cur: int, tot: int):
-        job = self._export.all_jobs()
-        for j in job:
-            if j.id == job_id:
-                self._jobs_page.update_job(j)
-                break
 
     @Slot(str, str)
     def _on_job_done(self, job_id: str, path: str):
@@ -877,10 +864,6 @@ class MainWindow(QMainWindow):
             done(job_id, path)
         else:
             self._doc_page.export_finished(path)
-        for j in self._export.all_jobs():
-            if j.id == job_id:
-                self._jobs_page.update_job(j)
-                break
         self.statusBar().showMessage("Exportaci\u00f3n completada", 4000)
 
     @Slot(str, str)
@@ -891,10 +874,6 @@ class MainWindow(QMainWindow):
             err(job_id, msg)
         else:
             self._doc_page.export_error(msg)
-        for j in self._export.all_jobs():
-            if j.id == job_id:
-                self._jobs_page.update_job(j)
-                break
         self.statusBar().showMessage(msg, 4000)
 
     @Slot(int)
@@ -910,10 +889,6 @@ class MainWindow(QMainWindow):
     def _on_job_cancelled(self, job_id: str):
         logger.info("Trabajo cancelado: %s", job_id)
         self._custom_handlers.pop(job_id, None)
-        for j in self._export.all_jobs():
-            if j.id == job_id:
-                self._jobs_page.update_job(j)
-                break
         self.statusBar().showMessage("Exportaci\u00f3n cancelada", 4000)
 
     # Process dialog updates
@@ -980,12 +955,6 @@ class MainWindow(QMainWindow):
                 f"QPushButton {{ background: {SURFACE2}; border: 1px solid {BORDER}; "
                 f"border-radius: 4px; padding: 0 12px; font-size:9pt; color:{TEXT}; }}"
                 f"QPushButton:hover {{ background: {SURFACE3}; }}")
-
-    @Slot(str)
-    def _on_export_cancel(self, job_id: str):
-        logger.info("Cancelaci\u00f3n de exportaci\u00f3n solicitada: %s", job_id)
-        self._export.cancel_export(job_id)
-        self.statusBar().showMessage("Cancelando exportaci\u00f3n\u2026")
 
     @Slot(int)
     def _open_fullscreen(self, index: int):
