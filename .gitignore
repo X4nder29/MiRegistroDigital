@@ -23,7 +23,6 @@ Thumbs.db
 
 # Project specific
 installer/output/
-fonts/
 
 # opencode workspace
 .opencode/
