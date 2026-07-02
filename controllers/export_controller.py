@@ -568,24 +568,36 @@ def _append_to_doc(doc: fitz.Document, pages: list[PageData], dpi: int):
 
 
 def _merge_pdf_src(doc: fitz.Document, src: str, pages: list[PageData]):
-    """Copy pages directly from a source PDF (lossless)."""
+    """Copy pages directly from a source PDF (lossless), adding comment annotations."""
     import fitz
     src_doc = fitz.open(src)
-    nums = [p.source_page for p in pages if p.source_page >= 0]
-    if nums:
-        if len(nums) == 1:
-            doc.insert_pdf(src_doc, from_page=nums[0], to_page=nums[0])
-        else:
-            src_doc.select(nums)
-            doc.insert_pdf(src_doc)
+    for p in pages:
+        if p.source_page < 0:
+            continue
+        doc.insert_pdf(src_doc, from_page=p.source_page, to_page=p.source_page)
+        if p.comment:
+            page = doc[-1]
+            r = page.rect
+            bh = min(60, r.height // 3)
+            rect = fitz.Rect(0, r.y1 - bh, r.x1, r.y1)
+            page.add_freetext_annot(
+                rect, p.comment,
+                fontsize=9, fontname="helv",
+                text_color=(1, 1, 1),
+                fill_color=(0, 0, 0),
+                border_width=0,
+            )
     src_doc.close()
 
 
 def _merge_images(doc: fitz.Document, pages: list[PageData]):
-    """Encode pages as JPEG and insert (lossy fallback for non-PDF sources)."""
+    """Encode pages as JPEG and insert (lossy fallback for non-PDF sources), overlaying comments."""
+    from utils.image_utils import overlay_comment
     import cv2
     for p in pages:
         img = p.display_image
+        if p.comment:
+            img = overlay_comment(img, p.comment)
         h, w = img.shape[:2]
         _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 95])
         new_page = doc.new_page(width=w, height=h)
