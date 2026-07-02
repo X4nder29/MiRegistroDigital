@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QStackedWidget, QFrame,
     QSizePolicy, QApplication,
     QFileDialog, QMessageBox, QProgressDialog,
+    QDialog, QProgressBar,
 )
 from PySide6.QtCore import Qt, Slot, Signal, QSize, QObject, QTimer, QRunnable, QThreadPool
 from PySide6.QtGui import QFont, QIcon, QKeySequence
@@ -26,6 +27,7 @@ from controllers.scan_controller import ScanController
 from controllers.ocr_controller import OCRController
 from controllers.export_controller import ExportController
 from views.document_page import DocumentPage
+from views.pdf_page import EditorPage
 from views.settings_page import SettingsPage
 from views.widgets import FullscreenViewer, ProcessListDialog
 from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2, INFO, WARNING
@@ -35,6 +37,7 @@ logger = logging.getLogger("docscan.main")
 
 _NAV = [
     ("documentos",   "\U0001f4c4  Documentos"),
+    ("pdf",          "\U0001f4cb  Editor"),
     ("settings",     "\u2699\ufe0f  Ajustes"),
 ]
 
@@ -107,6 +110,7 @@ class MainWindow(QMainWindow):
         self._pending_pages: list = []
         self._fullscreen_viewer: FullscreenViewer | None = None
         self._process_dialog: ProcessListDialog | None = None
+        self._import_progress_dlg: QProgressDialog | None = None
         self._custom_handlers: dict[str, tuple] = {}
 
         self._autosave_timer = QTimer(self)
@@ -158,10 +162,11 @@ class MainWindow(QMainWindow):
         mid_layout.addWidget(self._build_sidebar())
 
         self._stack = QStackedWidget()
-        self._doc_page   = DocumentPage()
+        self._doc_page   = DocumentPage(config=self._cfg)
+        self._pdf_page   = EditorPage(config=self._cfg)
         self._sett_page  = SettingsPage(self._cfg)
 
-        for page in (self._doc_page, self._sett_page):
+        for page in (self._doc_page, self._pdf_page, self._sett_page):
             self._stack.addWidget(page)
 
         mid_layout.addWidget(self._stack)
@@ -191,6 +196,7 @@ class MainWindow(QMainWindow):
     def _open_process_dialog(self):
         if self._safe_process_dialog() is None:
             self._process_dialog = ProcessListDialog(self)
+            self._process_dialog.finished.connect(self._on_process_dialog_closed)
             for j in self._export.all_jobs():
                 self._process_dialog.add_job(j.id, j.label, j.total)
                 if j.status == JobStatus.RUNNING:
@@ -202,6 +208,9 @@ class MainWindow(QMainWindow):
                 elif j.status == JobStatus.CANCELLED:
                     self._process_dialog.set_job_cancelled(j.id)
             self._process_dialog.show()
+
+    def _on_process_dialog_closed(self):
+        self._process_dialog = None
 
     def _update_title(self):
         name = self._project_path.name if self._project_path else "Sin t\u00edtulo"
@@ -238,6 +247,11 @@ class MainWindow(QMainWindow):
         if self._autosave_pending:
             self._autosave_timer.start()
         else:
+            if not self._dirty:
+                try:
+                    clear_autosave()
+                except OSError:
+                    pass
             self._dirty = False
             self.statusBar().clearMessage()
             self._update_title()
@@ -267,14 +281,37 @@ class MainWindow(QMainWindow):
 
     def _save_project(self):
         if self._project_path:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Guardando proyecto")
+            dlg.setWindowModality(Qt.WindowModal)
+            dlg.setFixedSize(420, 170)
+            lay = QVBoxLayout(dlg)
+            lay.setContentsMargins(16, 14, 16, 14)
+            lay.setSpacing(12)
+            lbl = QLabel("Guardando proyecto\u2026")
+            lbl.setWordWrap(True)
+            lay.addWidget(lbl)
+            bar = QProgressBar()
+            bar.setRange(0, 0)
+            lay.addWidget(bar)
+            dlg.show()
+            QApplication.processEvents()
             try:
-                save_project(self._project_path, self._model.pages)
+                def _on_progress(c: int, t: int):
+                    if bar.minimum() == bar.maximum():
+                        bar.setRange(0, t)
+                    bar.setValue(c)
+                    lbl.setText(f"Comprimiendo página {c} de {t}\u2026")
+                    QApplication.processEvents()
+                save_project(self._project_path, self._model.pages,
+                             progress_callback=_on_progress)
                 self._dirty = False
                 self._update_title()
-                clear_autosave()
                 self.statusBar().showMessage(f"Proyecto guardado: {self._project_path.name}")
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"No se pudo guardar:\n{e}")
+            finally:
+                dlg.close()
         else:
             self._save_project_as()
 
@@ -286,15 +323,37 @@ class MainWindow(QMainWindow):
         p = Path(path)
         if p.suffix.lower() != ".miregistro":
             p = p.with_suffix(".miregistro")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Guardando proyecto")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setFixedSize(420, 170)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(12)
+        lbl = QLabel("Guardando proyecto\u2026")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        lay.addWidget(bar)
+        dlg.show()
+        QApplication.processEvents()
         try:
-            save_project(p, self._model.pages)
+            def _on_progress(c: int, t: int):
+                if bar.minimum() == bar.maximum():
+                    bar.setRange(0, t)
+                bar.setValue(c)
+                lbl.setText(f"Comprimiendo página {c} de {t}\u2026")
+                QApplication.processEvents()
+            save_project(p, self._model.pages, progress_callback=_on_progress)
             self._project_path = p
             self._dirty = False
             self._update_title()
-            clear_autosave()
             self.statusBar().showMessage(f"Proyecto guardado: {p.name}")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"No se pudo guardar:\n{e}")
+        finally:
+            dlg.close()
 
     def _open_project(self):
         if not self._confirm_save():
@@ -304,15 +363,28 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        progress = QProgressDialog("Cargando proyecto…", None, 0, 0, self)
-        progress.setWindowTitle("Abriendo proyecto")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.show()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Abriendo proyecto")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setFixedSize(420, 170)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(12)
+        lbl = QLabel("Cargando proyecto\u2026")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        lay.addWidget(bar)
+        dlg.show()
         QApplication.processEvents()
 
         try:
             def _on_progress(current: int, total: int):
-                progress.setLabelText(f"Decodificando página {current} de {total}…")
+                if bar.minimum() == bar.maximum():
+                    bar.setRange(0, total)
+                bar.setValue(current)
+                lbl.setText(f"Decodificando página {current} de {total}\u2026")
                 QApplication.processEvents()
 
             pages = load_project(Path(path), progress_callback=_on_progress)
@@ -323,33 +395,75 @@ class MainWindow(QMainWindow):
             self._update_title()
             clear_autosave()
 
-            progress.setLabelText("Reconstruyendo interfaz…")
+            lbl.setText("Reconstruyendo interfaz\u2026")
             QApplication.processEvents()
 
             def _on_rebuild(current: int, total: int):
-                progress.setLabelText(f"Reconstruyendo interfaz… {current}/{total}")
+                if bar.minimum() == bar.maximum():
+                    bar.setRange(0, total)
+                bar.setValue(current)
+                lbl.setText(f"Reconstruyendo interfaz\u2026 {current}/{total}")
                 QApplication.processEvents()
 
             self._doc_page.rebuild(pages, progress_callback=_on_rebuild)
         except Exception as e:
-            progress.close()
+            dlg.close()
             QMessageBox.warning(self, "Error", f"No se pudo abrir el proyecto:\n{e}")
             return
         finally:
-            progress.close()
+            dlg.close()
 
         self.statusBar().showMessage(f"Proyecto cargado: {self._project_path.name}")
 
     def _close_project(self):
         if not self._confirm_save():
             return
+        self._cleanup_project()
+
+    def _cleanup_project(self):
         self._autosave_timer.stop()
+
+        self._scan.cancel_import()
+        self._ocr.cancel_all()
+        for jid in list(self._export._workers):
+            self._export.cancel_export(jid)
+        self._export._jobs.clear()
+        self._export._workers.clear()
+        QThreadPool.globalInstance().clear()
+
+        if self._fullscreen_viewer:
+            try:
+                self._fullscreen_viewer.close()
+            except RuntimeError:
+                pass
+            self._fullscreen_viewer = None
+
+        self._pending_pages.clear()
+        self._custom_handlers.clear()
+        self._autosave_worker = None
+
+        if self._process_dialog:
+            try:
+                self._process_dialog.close()
+            except RuntimeError:
+                pass
+            self._process_dialog = None
+
+        if self._import_progress_dlg:
+            try:
+                self._import_progress_dlg.close()
+            except RuntimeError:
+                pass
+            self._import_progress_dlg = None
+
         self._model.clear()
         self._project_path = None
         self._dirty = False
         self._update_title()
-        clear_autosave()
-        self._refresh_all_views()
+        try:
+            clear_autosave()
+        except OSError:
+            pass
         self._doc_page.clear()
         self.statusBar().showMessage("Proyecto cerrado")
 
@@ -410,7 +524,7 @@ class MainWindow(QMainWindow):
         return sidebar
 
     def _navigate(self, key: str):
-        idx = {"documentos": 0, "settings": 1}
+        idx = {"documentos": 0, "pdf": 1, "settings": 2}
         for k, btn in self._nav_btns.items():
             btn.setChecked(k == key)
         self._stack.setCurrentIndex(idx.get(key, 0))
@@ -468,7 +582,7 @@ class MainWindow(QMainWindow):
         self._scan.import_done.connect(self._flush_pending_pages)
         self._scan.import_done.connect(lambda: self.statusBar().showMessage(
             f"Importaci\u00f3n completa \u2014 {self._model.count} p\u00e1gina(s)"))
-        self._scan.import_progress.connect(dp.show_import_progress)
+
         self._scan.error.connect(self._on_error)
         self._scan.correction_done.connect(self._on_correction_done)
 
@@ -479,7 +593,6 @@ class MainWindow(QMainWindow):
 
         # Export signals
         self._export.job_created.connect(self._on_job_created)
-        self._export.job_progress.connect(self._on_job_progress)
         self._export.job_done.connect(self._on_job_done)
         self._export.job_error.connect(self._on_job_error)
         self._export.job_cancelled.connect(self._on_job_cancelled)
@@ -492,6 +605,8 @@ class MainWindow(QMainWindow):
         # Other pages
         self._sett_page.settings_saved.connect(
             lambda: self.statusBar().showMessage("Configuraci\u00f3n guardada", 3000))
+        self._pdf_page.pdf_generated.connect(
+            lambda p: self.statusBar().showMessage(f"PDF organizado guardado: {Path(p).name}"))
 
         # Unified status bar signals
         self._doc_page.grid.page_selected.connect(lambda i: self._update_status_bar())
@@ -535,10 +650,59 @@ class MainWindow(QMainWindow):
 
     @Slot(list)
     def _on_import(self, paths: list[Path]):
+        if self._import_progress_dlg is not None:
+            logger.warning("Import ya en curso, ignorando nueva solicitud")
+            return
         logger.info("Importando %d archivos", len(paths))
         self._doc_page.import_busy(True)
         self.statusBar().showMessage(f"Importando {len(paths)} archivo(s)\u2026")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Importando PDF")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setFixedSize(420, 170)
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(12)
+
+        lbl = QLabel("Importando PDF\u2026")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        lay.addWidget(bar)
+
+        btn = QPushButton("Cancelar")
+        btn.clicked.connect(self._scan.cancel_import)
+        lay.addWidget(btn, alignment=Qt.AlignCenter)
+
+        dlg.show()
+        QApplication.processEvents()
+        self._import_progress_dlg = dlg
+
+        def _on_progress(c, t):
+            if bar.minimum() == bar.maximum():
+                bar.setRange(0, t)
+            bar.setValue(c)
+            lbl.setText(f"Importando p\u00e1gina {c} de {t}\u2026")
+            QApplication.processEvents()
+
+        self._scan.import_progress.connect(_on_progress)
+        self._scan.import_done.connect(self._finish_import_progress)
+        self._scan.error.connect(lambda msg: self._finish_import_progress())
+
         self._scan.import_files(paths)
+
+    def _finish_import_progress(self):
+        dlg = self._import_progress_dlg
+        if dlg:
+            self._import_progress_dlg = None
+            try:
+                dlg.close()
+            except RuntimeError:
+                pass
 
     @Slot(object)
     def _on_page_queued(self, page):
@@ -961,10 +1125,14 @@ class MainWindow(QMainWindow):
         pages = self._model.pages
         if not pages:
             return
-        self._fullscreen_viewer = FullscreenViewer(pages, start=index, parent=self, config=self._cfg)
+        self._fullscreen_viewer = FullscreenViewer(list(pages), start=index, config=self._cfg)
         self._fullscreen_viewer.bookmark_changed.connect(self._scan.set_bookmark)
         self._fullscreen_viewer.comment_changed.connect(self._on_comment_set)
+        self._fullscreen_viewer.finished.connect(self._on_fullscreen_closed)
         self._fullscreen_viewer.show()
+
+    def _on_fullscreen_closed(self):
+        self._fullscreen_viewer = None
 
     def closeEvent(self, event):
         self._autosave_timer.stop()
@@ -979,6 +1147,6 @@ class MainWindow(QMainWindow):
             elif ret == QMessageBox.Cancel:
                 event.ignore()
                 return
-        clear_autosave()
+        self._cleanup_project()
         self._cfg.save()
         super().closeEvent(event)

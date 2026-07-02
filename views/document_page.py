@@ -12,9 +12,10 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QPlainTextEdit, QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QEvent
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 
 from views.widgets import ThumbnailGrid, ImageViewer
+from models.config_model import ConfigModel
 from views.theme import (
     SURFACE, SURFACE2, SURFACE3, BORDER, BG,
     TEXT, TEXT_SEC, TEXT_DIM, SUCCESS, DANGER, WARNING, INFO,
@@ -67,8 +68,9 @@ class DocumentPage(QWidget):
 
     COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS, COL_BOOKMARK, COL_COMMENT = 0, 1, 2, 3, 4, 5
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config: ConfigModel | None = None):
         super().__init__(parent)
+        self._cfg = config
         self._current_idx = -1
         self._rot_angle = 0.0
         self._building = False
@@ -84,12 +86,7 @@ class DocumentPage(QWidget):
         root.setSpacing(0)
 
         root.addWidget(self._build_toolbar())
-
-        self._import_prog = QProgressBar()
-        self._import_prog.setFixedHeight(3)
-        self._import_prog.setTextVisible(False)
-        self._import_prog.setVisible(False)
-        root.addWidget(self._import_prog)
+        self._apply_import_shortcut()
 
         self._empty = QLabel(
             "  Importa un PDF o imágenes para comenzar\n\n"
@@ -132,6 +129,12 @@ class DocumentPage(QWidget):
         splitter.setVisible(False)
         root.addWidget(splitter, 1)
 
+
+    def _apply_import_shortcut(self):
+        seq = "Ctrl+P"
+        if self._cfg:
+            seq = self._cfg.get("shortcuts", "import_pdf", seq)
+        QShortcut(QKeySequence(seq), self, self._open_pdf)
 
     # ── Toolbar ──
 
@@ -1154,21 +1157,8 @@ class DocumentPage(QWidget):
         self._btn_cancel_ocr.setVisible(False)
         self._ocr_prog.setVisible(False)
 
-    def show_import_progress(self, current: int, total: int):
-        self._import_prog.setVisible(True)
-        self._import_prog.setMaximum(total)
-        self._import_prog.setValue(current)
-        if current >= total:
-            self._import_prog.setVisible(False)
-
     def import_busy(self, busy: bool):
-        self._import_prog.setVisible(busy)
         self._btn_cancel_import.setVisible(busy)
-        if busy:
-            self._import_prog.setRange(0, 0)
-        else:
-            self._import_prog.setRange(0, 1)
-            self._import_prog.setVisible(False)
 
     def update_groups(self, groups: list[list[int]]):
         self._ant_groups.clear()
@@ -1193,6 +1183,17 @@ class DocumentPage(QWidget):
         self.viewer.set_image(None)
         self._empty.setVisible(True)
         self._splitter.setVisible(False)
+        self._rot_slider.setValue(0)
+        self._export_folder.clear()
+        self._ant_serial.setValue(1)
+        self._ant_pad.setValue(5)
+        self._ant_chk_range.setChecked(False)
+        self._ant_desde.setValue(1)
+        self._ant_hasta.setValue(100)
+        self._btn_ocr.setEnabled(True)
+        self._btn_ocr.setText("  OCR todas")
+        self._btn_cancel_ocr.setVisible(False)
+        self._btn_cancel_import.setVisible(False)
         self._update_page_count()
         self._refresh_ocr_summary()
         self._refresh_info_tab()

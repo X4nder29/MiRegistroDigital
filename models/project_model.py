@@ -19,12 +19,14 @@ def get_autosave_path() -> Path:
     return _AUTOSAVE_DIR / _AUTOSAVE_NAME
 
 
-def save(path: Path, pages: list[PageData]) -> None:
+def save(path: Path, pages: list[PageData],
+         progress_callback: Callable[[int, int], None] | None = None) -> None:
     metadata = {
         "version": _CURRENT_VERSION,
         "created": datetime.now().isoformat(),
         "pages": [],
     }
+    total = len(pages)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         for i, p in enumerate(pages):
             entry = {
@@ -47,6 +49,8 @@ def save(path: Path, pages: list[PageData]) -> None:
                                         [cv2.IMWRITE_JPEG_QUALITY, 95])
             if success:
                 zf.writestr(f"pages/{i:04d}.jpg", buf.tobytes())
+            if progress_callback:
+                progress_callback(i + 1, total)
 
         zf.writestr("metadata.json", json.dumps(metadata, indent=2, ensure_ascii=False))
 
