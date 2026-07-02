@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QLabel, QFrame, QWidget, QScrollArea, QGridLayout,
     QVBoxLayout, QHBoxLayout, QSizePolicy, QPushButton,
     QMenu, QToolBar, QRubberBand, QCheckBox, QApplication,
-    QInputDialog, QDialog, QProgressBar, QListWidget, QListWidgetItem,
+    QInputDialog, QDialog, QMessageBox, QProgressBar, QListWidget, QListWidgetItem,
     QPlainTextEdit, QLineEdit, QSpinBox, QStackedWidget, QDialogButtonBox,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint, QMimeData, QEvent, QTimer
@@ -47,6 +47,7 @@ class ImageViewer(QLabel):
         self._zoom_cache: dict[tuple[int, int], QPixmap] = {}
 
     def set_pixmap(self, pixmap: QPixmap | None):
+        self._zoom_cache.clear()
         self._pixmap = pixmap
         if pixmap is None:
             self.setText("Sin imagen")
@@ -118,6 +119,15 @@ class ImageViewer(QLabel):
         if image is None:
             self.set_pixmap(None)
             self.setText("Sin imagen")
+            if self._rubber_band:
+                self._rubber_band.deleteLater()
+                self._rubber_band = None
+            if self._preview_band:
+                self._preview_band.deleteLater()
+                self._preview_band = None
+            if self._debug_band:
+                self._debug_band.deleteLater()
+                self._debug_band = None
             return
         self.set_pixmap(ndarray_to_qpixmap(image))
 
@@ -577,14 +587,6 @@ class FullscreenViewer(QDialog):
         bl.addStretch()
         wl.addLayout(bl)
 
-        b_ok = QPushButton("✅ Aceptar")
-        b_ok.setFixedHeight(34)
-        b_ok.setStyleSheet(
-            f"QPushButton {{ background:{ACCENT}; border:none; border-radius:6px; "
-            f"color:white; font-weight:bold; }}"
-            f"QPushButton:hover {{ background:#5b9cf6; }}")
-        b_ok.clicked.connect(self._bm_accept)
-        wl.addWidget(b_ok)
         lay.addWidget(w, 1)
         return f
 
@@ -786,6 +788,7 @@ class FullscreenViewer(QDialog):
 
     def _setup_shortcuts(self):
         bk_key = self._config.get("shortcuts", "fullscreen_bookmark", "Insert") if self._config else "Insert"
+        ab_key = self._config.get("shortcuts", "fullscreen_autobookmark", "Up") if self._config else "Up"
         pairs = [
             (Qt.Key_Left,             self._prev),
             (Qt.Key_Right,            self._next),
@@ -795,6 +798,7 @@ class FullscreenViewer(QDialog):
             (Qt.CTRL | Qt.Key_D,      self._btn_dual.toggle),
             (Qt.CTRL | Qt.Key_M,      self._toggle_comment_sidebar),
             (QKeySequence(bk_key),    self._quick_bookmark),
+            (QKeySequence(ab_key),    self._auto_bookmark),
             (Qt.Key_Escape,           self._on_escape),
         ]
         for seq, slot in pairs:
@@ -854,34 +858,53 @@ class FullscreenViewer(QDialog):
         dlg = _BookmarkItemDialog(self, titulo="", nivel=1)
         if dlg.exec() == QDialog.Accepted:
             lvl, title = dlg.get_values()
-            item = QListWidgetItem(BookmarkDialog._format_item(lvl, title))
-            item.setData(Qt.UserRole, (lvl, title))
-            self._bm_list.addItem(item)
+            p = self._pages[self._idx]
+            labels = list(p.bookmarks or [])
+            labels.append((lvl, title))
+            p.bookmarks = labels
+            p.bookmark = labels[0][1] if labels else ""
+            self.bookmark_changed.emit(p.index, labels)
+            self._refresh_bookmark_panel()
 
     def _bm_edit(self):
-        item = self._bm_list.currentItem()
-        if not item:
+        row = self._bm_list.currentRow()
+        if row < 0:
             return
+        item = self._bm_list.item(row)
         lvl, title = item.data(Qt.UserRole)
         dlg = _BookmarkItemDialog(self, titulo=title, nivel=lvl)
         if dlg.exec() == QDialog.Accepted:
-            lvl, title = dlg.get_values()
-            item.setText(BookmarkDialog._format_item(lvl, title))
-            item.setData(Qt.UserRole, (lvl, title))
+            new_lvl, new_title = dlg.get_values()
+            p = self._pages[self._idx]
+            labels = list(p.bookmarks or [])
+            if row < len(labels):
+                labels[row] = (new_lvl, new_title)
+            p.bookmarks = labels
+            p.bookmark = labels[0][1] if labels else ""
+            self.bookmark_changed.emit(p.index, labels)
+            self._refresh_bookmark_panel()
 
     def _bm_remove(self):
-        item = self._bm_list.currentItem()
-        if item:
-            self._bm_list.takeItem(self._bm_list.row(item))
-
-    def _bm_accept(self):
+        row = self._bm_list.currentRow()
+        if row < 0:
+            return
+        item = self._bm_list.item(row)
+        lvl, title = item.data(Qt.UserRole)
+        disp = BookmarkDialog._format_item(lvl, title)
+        confirm = QMessageBox.question(
+            self, "Eliminar marcador",
+            f"¿Eliminar marcador \"{disp}\"?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
         p = self._pages[self._idx]
-        labels = [self._bm_list.item(i).data(Qt.UserRole) for i in range(self._bm_list.count())]
+        labels = list(p.bookmarks or [])
+        if row < len(labels):
+            labels.pop(row)
         p.bookmarks = labels
         p.bookmark = labels[0][1] if labels else ""
         self.bookmark_changed.emit(p.index, labels)
         self._refresh_bookmark_panel()
-        self._hide_bookmark_sidebar()
 
     # ── Comment panel logic ──
 
@@ -978,6 +1001,7 @@ class FullscreenViewer(QDialog):
             self._refresh_bookmark_panel()
         if self._cm_sidebar.isVisible():
             self._cm_title.setText(f"💬 Comentario — Pág {self._idx + 1}")
+            self._refresh_comment_panel()
 
     def _show_dual(self):
         p1 = self._pages[self._idx]
@@ -1015,8 +1039,29 @@ class FullscreenViewer(QDialog):
             labels = [(1, label)] if label else []
             p.bookmarks = labels
             p.bookmark = label
-            self.bookmark_changed.emit(p.index, labels)
-            self._refresh_bookmark_panel()
+        self.bookmark_changed.emit(p.index, labels)
+        self._refresh_bookmark_panel()
+
+    def _auto_bookmark(self):
+        p = self._pages[self._idx]
+        last_num = None
+        for i in range(self._idx - 1, -1, -1):
+            prev = self._pages[i]
+            bm = prev.bookmark
+            if bm and bm.strip():
+                try:
+                    last_num = int(bm.strip())
+                    break
+                except ValueError:
+                    pass
+        if last_num is None:
+            return
+        label = str(last_num + 1)
+        labels = [(1, label)]
+        p.bookmarks = labels
+        p.bookmark = label
+        self.bookmark_changed.emit(p.index, labels)
+        self._refresh_bookmark_panel()
 
     # ── Navigation ──
 
@@ -1045,12 +1090,15 @@ class FullscreenViewer(QDialog):
 
     def _prev(self):
         if self._idx > 0:
-            self._idx -= 2 if self._dual_mode else 1
-            self._show_current()
+            step = 2 if self._dual_mode else 1
+            if self._idx - step >= 0:
+                self._idx -= step
+                self._show_current()
 
     def _next(self):
-        if self._idx < len(self._pages) - 1:
-            self._idx += 2 if self._dual_mode else 1
+        step = 2 if self._dual_mode else 1
+        if self._idx + step < len(self._pages):
+            self._idx += step
             self._show_current()
 
     def wheelEvent(self, event: QWheelEvent):
@@ -1197,6 +1245,8 @@ class ThumbnailCard(QFrame):
     checked_toggled      = Signal(int, bool)
     bookmark_clicked     = Signal(int)
     comment_clicked      = Signal(int)
+    move_before_requested = Signal(int)
+    move_after_requested  = Signal(int)
 
     def __init__(self, index: int, image: np.ndarray, parent=None):
         super().__init__(parent)
@@ -1339,6 +1389,9 @@ class ThumbnailCard(QFrame):
         menu.addSeparator()
         act_full = menu.addAction("Ver a pantalla completa")
         menu.addSeparator()
+        act_move_before = menu.addAction("Mover antes de…")
+        act_move_after  = menu.addAction("Mover después de…")
+        menu.addSeparator()
         act_del = menu.addAction("Eliminar página")
         action = menu.exec(self.mapToGlobal(pos))
         if action == act_bm:
@@ -1349,6 +1402,10 @@ class ThumbnailCard(QFrame):
             self.cut_toggled.emit(self.page_index)
         elif action == act_full:
             self.fullscreen_requested.emit(self.page_index)
+        elif action == act_move_before:
+            self.move_before_requested.emit(self.page_index)
+        elif action == act_move_after:
+            self.move_after_requested.emit(self.page_index)
         elif action == act_del:
             self.delete_requested.emit(self.page_index)
 
@@ -1491,6 +1548,8 @@ class ThumbnailGrid(QScrollArea):
         card.checked_toggled.connect(self._on_checked_toggled)
         card.bookmark_clicked.connect(self._on_card_bookmark)
         card.comment_clicked.connect(self._on_card_comment)
+        card.move_before_requested.connect(self._on_move_before)
+        card.move_after_requested.connect(self._on_move_after)
         self._cards.append(card)
         i = len(self._cards) - 1
         self._grid.addWidget(card, i // self._cols, i % self._cols)
@@ -1524,6 +1583,30 @@ class ThumbnailGrid(QScrollArea):
         if dlg.exec() == QDialog.Accepted:
             text = dlg.get_comment()
             self.comment_requested.emit(index, text)
+
+    def _on_move_before(self, from_idx: int):
+        n = len(self._cards)
+        target, ok = QInputDialog.getInt(
+            self, "Mover página",
+            f"Mover página {from_idx + 1} antes de la página:",
+            minValue=1, maxValue=n, value=from_idx + 1)
+        if not ok or target == from_idx + 1:
+            return
+        target_idx = target - 1
+        to_idx = target_idx - (1 if from_idx < target_idx else 0)
+        self.reorder_requested.emit(from_idx, to_idx)
+
+    def _on_move_after(self, from_idx: int):
+        n = len(self._cards)
+        target, ok = QInputDialog.getInt(
+            self, "Mover página",
+            f"Mover página {from_idx + 1} después de la página:",
+            minValue=1, maxValue=n, value=from_idx + 1)
+        if not ok or target == from_idx + 1:
+            return
+        target_idx = target - 1
+        to_idx = target_idx + (1 if from_idx > target_idx else 0)
+        self.reorder_requested.emit(from_idx, to_idx)
 
     def _on_checked_toggled(self, index: int, checked: bool):
         if checked:
