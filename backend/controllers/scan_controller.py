@@ -113,7 +113,7 @@ class _ImportWorker(QRunnable):
             pix = doc[pg].get_pixmap(matrix=fitz.Matrix(self.pdf_dpi/72, self.pdf_dpi/72), colorspace=fitz.csRGB)
             img = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)
             doc.close()
-            return img[:,:,::-1]
+            return img[:,:,::-1].copy()
         except ImportError: pass
         try:
             from pdf2image import convert_from_path

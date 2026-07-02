@@ -16,6 +16,8 @@ from utils.file_utils import IMAGE_EXTS, PDF_EXT
 
 logger = logging.getLogger("docscan.scan")
 
+_fitz_lock = threading.Lock()
+
 
 class _ImportWorker(QRunnable):
     class S(QObject):
@@ -38,14 +40,15 @@ class _ImportWorker(QRunnable):
                             annots_text: str = "") -> Optional[np.ndarray]:
         try:
             import fitz
-            doc = fitz.open(path)
-            try:
-                mat = fitz.Matrix(pdf_dpi / 72, pdf_dpi / 72)
-                pix = doc[pg].get_pixmap(matrix=mat, colorspace=fitz.csRGB, annots=False)
-                img = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)
-                return img[:, :, ::-1]
-            finally:
-                doc.close()
+            with _fitz_lock:
+                doc = fitz.open(path)
+                try:
+                    mat = fitz.Matrix(pdf_dpi / 72, pdf_dpi / 72)
+                    pix = doc[pg].get_pixmap(matrix=mat, colorspace=fitz.csRGB, annots=False)
+                    img = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, 3)
+                    return img[:, :, ::-1].copy()
+                finally:
+                    doc.close()
         except ImportError:
             pass
         try:
@@ -60,18 +63,19 @@ class _ImportWorker(QRunnable):
     def _extract_annots(path: str, pg: int) -> str:
         try:
             import fitz
-            doc = fitz.open(path)
-            try:
-                texts = []
-                for a in doc[pg].annots():
-                    if a.type[0] in (fitz.PDF_ANNOT_TEXT, fitz.PDF_ANNOT_FREE_TEXT):
-                        info = a.info
-                        t = info.get("content", "") or info.get("title", "")
-                        if t:
-                            texts.append(t.strip())
-                return "\n".join(texts)
-            finally:
-                doc.close()
+            with _fitz_lock:
+                doc = fitz.open(path)
+                try:
+                    texts = []
+                    for a in doc[pg].annots():
+                        if a.type[0] in (fitz.PDF_ANNOT_TEXT, fitz.PDF_ANNOT_FREE_TEXT):
+                            info = a.info
+                            t = info.get("content", "") or info.get("title", "")
+                            if t:
+                                texts.append(t.strip())
+                    return "\n".join(texts)
+                finally:
+                    doc.close()
         except Exception:
             return ""
 
@@ -79,11 +83,12 @@ class _ImportWorker(QRunnable):
     def _get_toc(path: str) -> list:
         try:
             import fitz
-            doc = fitz.open(path)
-            try:
-                return doc.get_toc()
-            finally:
-                doc.close()
+            with _fitz_lock:
+                doc = fitz.open(path)
+                try:
+                    return doc.get_toc()
+                finally:
+                    doc.close()
         except Exception:
             return []
 

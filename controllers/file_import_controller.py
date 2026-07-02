@@ -143,7 +143,7 @@ class ImportWorker(QRunnable):
                 pix.height, pix.width, 3
             )
             doc.close()
-            return img[:, :, ::-1]  # RGB → BGR
+            return img[:, :, ::-1].copy()  # RGB → BGR
         except ImportError:
             pass
 
