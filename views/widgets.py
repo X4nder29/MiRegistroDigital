@@ -9,9 +9,10 @@ from PySide6.QtWidgets import (
     QMenu, QToolBar, QRubberBand, QCheckBox, QApplication,
     QInputDialog, QDialog, QMessageBox, QProgressBar, QListWidget, QListWidgetItem,
     QPlainTextEdit, QLineEdit, QSpinBox, QStackedWidget, QDialogButtonBox,
+    QListView, QAbstractItemView, QStyledItemDelegate,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint, QMimeData, QEvent, QTimer
-from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter, QWheelEvent, QDesktopServices, QIntValidator
+from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint, QMimeData, QEvent, QTimer, QModelIndex, QAbstractListModel
+from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter, QWheelEvent, QDesktopServices, QIntValidator, QPen, QColor, QFont
 from PySide6.QtCore import QUrl
 
 from utils.image_utils import ndarray_to_qpixmap
@@ -1236,194 +1237,346 @@ class ProcessListDialog(QDialog):
 
 
 THUMB_W, THUMB_H = 140, 196
+CARD_W = THUMB_W + 30
+CARD_H = THUMB_H + 80
 
-class ThumbnailCard(QFrame):
-    clicked              = Signal(int)
-    cut_toggled          = Signal(int)
-    delete_requested     = Signal(int)
-    fullscreen_requested = Signal(int)
-    checked_toggled      = Signal(int, bool)
-    bookmark_clicked     = Signal(int)
-    comment_clicked      = Signal(int)
-    move_before_requested = Signal(int)
-    move_after_requested  = Signal(int)
+_PIXMAP_ROLE = Qt.UserRole + 1
+_SERIAL_ROLE = Qt.UserRole + 2
+_CONFIDENCE_ROLE = Qt.UserRole + 3
+_BOOKMARK_ROLE = Qt.UserRole + 4
+_COMMENT_ROLE = Qt.UserRole + 5
+_CHECKED_ROLE = Qt.UserRole + 6
+_CUT_ROLE = Qt.UserRole + 7
+_SELECTED_ROLE = Qt.UserRole + 8
 
-    def __init__(self, index: int, image: np.ndarray, parent=None):
+
+class _PageItem:
+    __slots__ = ('index', 'image', 'serial', 'confidence', 'bookmark_labels',
+                 'bookmark_display', 'comment', 'checked', 'is_cut', 'selected', '_pixmap')
+
+    def __init__(self, index: int, image: np.ndarray | None):
+        self.index = index
+        self.image = image
+        self.serial = ''
+        self.confidence = 0.0
+        self.bookmark_labels: list[tuple[int, str]] = []
+        self.bookmark_display = ''
+        self.comment = ''
+        self.checked = False
+        self.is_cut = False
+        self.selected = False
+        self._pixmap: QPixmap | None = None
+
+
+class ThumbnailModel(QAbstractListModel):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.page_index = index
-        self._selected  = False
-        self._is_cut    = False
-        self._press_pos = QPoint()
+        self._items: list[_PageItem] = []
 
-        self.setFixedWidth(THUMB_W + 16)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._ctx_menu)
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._items)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(3)
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid() or index.row() >= len(self._items):
+            return None
+        item = self._items[index.row()]
+        if role == _PIXMAP_ROLE:
+            if item._pixmap is None and item.image is not None:
+                item._pixmap = _make_thumbnail_pixmap(item.image)
+            return item._pixmap
+        if role == Qt.DisplayRole or role == _SERIAL_ROLE:
+            return item.serial
+        if role == _CONFIDENCE_ROLE:
+            return item.confidence
+        if role == _BOOKMARK_ROLE:
+            return item.bookmark_display
+        if role == _COMMENT_ROLE:
+            return item.comment
+        if role == _CHECKED_ROLE:
+            return item.checked
+        if role == _CUT_ROLE:
+            return item.is_cut
+        if role == _SELECTED_ROLE:
+            return item.selected
+        return None
 
-        hdr = QHBoxLayout()
-        hdr.setContentsMargins(0, 0, 0, 0)
+    def setData(self, index, value, role=Qt.EditRole):
+        if not index.isValid() or index.row() >= len(self._items):
+            return False
+        item = self._items[index.row()]
+        if role == _CHECKED_ROLE:
+            item.checked = bool(value)
+            self.dataChanged.emit(index, index, [role])
+            return True
+        if role == _SELECTED_ROLE:
+            item.selected = bool(value)
+            self.dataChanged.emit(index, index, [role])
+            return True
+        if role == _CUT_ROLE:
+            item.is_cut = bool(value)
+            self.dataChanged.emit(index, index, [role])
+            return True
+        return False
 
-        self._num = QLabel(str(index + 1))
-        self._num.setStyleSheet(f"color: {TEXT_DIM}; font-size:8pt; border:none;")
+    def flags(self, index):
+        return Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled
 
-        self._check = QCheckBox()
-        self._check.setFixedSize(16, 16)
-        self._check.setStyleSheet("QCheckBox { border:none; background:transparent; } "
-                                  "QCheckBox::indicator { width:14px; height:14px; }")
-        self._check.stateChanged.connect(self._on_check_changed)
+    # ---- Public mutations ----
 
-        hdr.addWidget(self._num)
-        hdr.addStretch()
-        hdr.addWidget(self._check)
+    def add_page(self, index: int, image: np.ndarray) -> int:
+        row = len(self._items)
+        self.beginInsertRows(QModelIndex(), row, row)
+        self._items.append(_PageItem(index, image))
+        self.endInsertRows()
+        return row
 
-        self._img_lbl = QLabel()
-        self._img_lbl.setFixedSize(THUMB_W, THUMB_H)
-        self._img_lbl.setAlignment(Qt.AlignCenter)
-        self._img_lbl.setStyleSheet(f"background:{SURFACE2}; border-radius:4px;")
+    def remove_page(self, index: int):
+        for i, item in enumerate(self._items):
+            if item.index == index:
+                self.beginRemoveRows(QModelIndex(), i, i)
+                self._items.pop(i)
+                self.endRemoveRows()
+                self._renumber()
+                return
 
-        self._bookmark_lbl = QLabel()
-        self._bookmark_lbl.setAlignment(Qt.AlignCenter)
-        self._bookmark_lbl.setStyleSheet(
-            f"font-size:7pt; color:{INFO}; background:{BG}; "
-            f"border:1px solid {BORDER}; border-radius:4px; padding:1px 4px;")
-        self._bookmark_lbl.hide()
+    def update_image(self, index: int, image: np.ndarray):
+        item = self._by_index(index)
+        if item is None:
+            return
+        item.image = image
+        item._pixmap = None
+        row = self._items.index(item)
+        self.dataChanged.emit(self.index(row, 0), self.index(row, 0), [_PIXMAP_ROLE])
 
-        self._serial_lbl = QLabel("—")
-        self._serial_lbl.setAlignment(Qt.AlignCenter)
-        self._serial_lbl.setStyleSheet(f"font-size:8pt; color: {TEXT_DIM}; border:none;")
+    def set_serial(self, index: int, serial: str, confidence: float):
+        item = self._by_index(index)
+        if item is None:
+            return
+        item.serial = serial
+        item.confidence = confidence
+        row = self._items.index(item)
+        self.dataChanged.emit(self.index(row, 0), self.index(row, 0),
+                              [_SERIAL_ROLE, _CONFIDENCE_ROLE])
 
-        layout.addLayout(hdr)
-        layout.addWidget(self._img_lbl)
-        layout.addWidget(self._bookmark_lbl)
-        layout.addWidget(self._serial_lbl)
+    def set_cut(self, index: int, is_cut: bool):
+        item = self._by_index(index)
+        if item is None:
+            return
+        item.is_cut = is_cut
+        row = self._items.index(item)
+        self.dataChanged.emit(self.index(row, 0), self.index(row, 0), [_CUT_ROLE])
 
-        self.set_image(image)
-        self._update_style()
+    def set_bookmark(self, index: int, display: str):
+        item = self._by_index(index)
+        if item is None:
+            return
+        item.bookmark_display = display
+        row = self._items.index(item)
+        self.dataChanged.emit(self.index(row, 0), self.index(row, 0), [_BOOKMARK_ROLE])
 
-    def _on_check_changed(self, state):
-        self.checked_toggled.emit(self.page_index, bool(state))
+    def set_bookmarks(self, index: int, labels: list[tuple[int, str]]):
+        item = self._by_index(index)
+        if item is None:
+            return
+        item.bookmark_labels = labels
+        first = labels[0][1] if labels else ''
+        n = len(labels)
+        item.bookmark_display = f"{first} 📑{n}" if n > 1 else first
+        row = self._items.index(item)
+        self.dataChanged.emit(self.index(row, 0), self.index(row, 0), [_BOOKMARK_ROLE])
 
-    def set_checked(self, v: bool):
-        self._check.blockSignals(True)
-        self._check.setChecked(v)
-        self._check.blockSignals(False)
+    def set_checked(self, index: int, checked: bool):
+        item = self._by_index(index)
+        if item is None:
+            return
+        item.checked = checked
+        row = self._items.index(item)
+        self.dataChanged.emit(self.index(row, 0), self.index(row, 0), [_CHECKED_ROLE])
 
-    def is_checked(self) -> bool:
-        return self._check.isChecked()
+    def set_selected(self, index: int, selected: bool):
+        item = self._by_index(index)
+        if item is None:
+            return
+        item.selected = selected
+        row = self._items.index(item)
+        self.dataChanged.emit(self.index(row, 0), self.index(row, 0), [_SELECTED_ROLE])
 
-    def set_bookmark(self, text: str):
-        if text:
-            self._bookmark_lbl.setText(f"{text}")
-            self._bookmark_lbl.show()
+    def set_all_checked(self, checked: bool):
+        for item in self._items:
+            item.checked = checked
+        n = len(self._items)
+        if n:
+            self.dataChanged.emit(self.index(0, 0), self.index(n - 1, 0), [_CHECKED_ROLE])
+
+    def clear_all(self):
+        self.beginResetModel()
+        self._items.clear()
+        self.endResetModel()
+
+    def reorder(self, from_idx: int, to_idx: int):
+        if from_idx == to_idx:
+            return
+        n = len(self._items)
+        if not (0 <= from_idx < n and 0 <= to_idx <= n):
+            return
+        dest = to_idx if to_idx > from_idx else from_idx
+        self.beginMoveRows(QModelIndex(), from_idx, from_idx, QModelIndex(), dest)
+        item = self._items.pop(from_idx)
+        self._items.insert(to_idx, item)
+        self.endMoveRows()
+        self._renumber()
+
+    def _renumber(self):
+        for i, item in enumerate(self._items):
+            item.index = i
+
+    def _by_index(self, index: int) -> _PageItem | None:
+        for item in self._items:
+            if item.index == index:
+                return item
+        return None
+
+
+def _make_thumbnail_pixmap(image: np.ndarray) -> QPixmap:
+    h, w = image.shape[:2]
+    if w > THUMB_W or h > THUMB_H:
+        scale = min(THUMB_W / w, THUMB_H / h)
+        nw = max(1, int(w * scale))
+        nh = max(1, int(h * scale))
+        image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_AREA)
+    return ndarray_to_qpixmap(image)
+
+
+class ThumbnailDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._font_num = QFont()
+        self._font_num.setPointSize(8)
+        self._font_bm = QFont()
+        self._font_bm.setPointSize(7)
+        self._font_ser = QFont()
+        self._font_ser.setPointSize(8)
+        self._font_ser.setBold(True)
+
+    def paint(self, painter, option, index):
+        model = index.model()
+        is_cut = bool(model.data(index, _CUT_ROLE) or False)
+        is_sel = bool(model.data(index, _SELECTED_ROLE) or False)
+        is_chk = bool(model.data(index, _CHECKED_ROLE) or False)
+        serial = model.data(index, _SERIAL_ROLE) or ''
+        conf = model.data(index, _CONFIDENCE_ROLE) or 0.0
+        bm = model.data(index, _BOOKMARK_ROLE) or ''
+        comment = model.data(index, _COMMENT_ROLE) or ''
+        pix = model.data(index, _PIXMAP_ROLE)
+
+        r = option.rect
+        cx = r.x() + 8
+        cy = r.y() + 8
+        cw = r.width() - 16
+        ch = r.height() - 16
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # background + border
+        if is_cut:
+            brd = QColor(WARNING)
+            bg = QColor(SURFACE)
+        elif is_sel:
+            brd = QColor(SURFACE3)
+            bg = QColor(SURFACE2)
         else:
-            self._bookmark_lbl.hide()
+            brd = QColor(0, 0, 0, 0)
+            bg = QColor(SURFACE)
+        painter.setBrush(bg)
+        painter.setPen(QPen(brd, 2 if (is_cut or is_sel) else 1))
+        painter.drawRoundedRect(cx, cy, cw, ch, 8, 8)
 
-    def set_comment(self, text: str):
-        if text:
-            preview = text[:40] + "…" if len(text) > 40 else text
-            self._num.setToolTip(f"💬 Comentario: {preview}")
-        else:
-            self._num.setToolTip("")
+        # header: page number
+        painter.setPen(QColor(TEXT_DIM))
+        painter.setFont(self._font_num)
+        painter.drawText(cx + 8, cy + 4, cw - 24, 16,
+                         Qt.AlignLeft | Qt.AlignVCenter, str(index.row() + 1))
 
-    def set_image(self, image: np.ndarray):
-        h, w = image.shape[:2]
-        if w > THUMB_W or h > THUMB_H:
-            import cv2
-            scale = min(THUMB_W / w, THUMB_H / h)
-            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-            image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_AREA)
-        px = ndarray_to_qpixmap(image)
-        self._img_lbl.setPixmap(px)
+        # checkbox
+        check_rect = QRect(cx + cw - 22, cy + 5, 16, 16)
+        _draw_checkbox(painter, check_rect, is_chk)
 
-    def set_serial(self, serial: str, confidence: float = 0.0):
+        # thumbnail area
+        tx = cx + 4
+        ty = cy + 24
+        tw = cw - 8
+        th = THUMB_H
+        painter.setBrush(QColor(SURFACE2))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(tx, ty, tw, th, 4, 4)
+
+        if pix is not None and not pix.isNull():
+            scaled = pix.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            ox = tx + (tw - scaled.width()) // 2
+            oy = ty + (th - scaled.height()) // 2
+            painter.drawPixmap(ox, oy, scaled)
+
+        # bookmark
+        bm_y = ty + th + 4
+        if bm:
+            painter.setPen(QColor(INFO))
+            painter.setFont(self._font_bm)
+            r_bm = QRect(cx + 4, bm_y, cw - 8, 16)
+            painter.drawText(r_bm, Qt.AlignCenter, bm)
+
+        # serial
+        ser_y = bm_y + (18 if bm else 4)
         if serial:
-            color = SUCCESS if confidence >= 0.7 else WARNING if confidence > 0 else TEXT_SEC
-            self._serial_lbl.setText(serial)
+            s_color = SUCCESS if conf >= 0.7 else (WARNING if conf > 0 else TEXT_SEC)
+            painter.setPen(QColor(s_color))
         else:
-            color = DANGER
-            self._serial_lbl.setText("Sin serial")
-        self._serial_lbl.setStyleSheet(
-            f"font-size:8pt; font-weight:bold; color: {color}; border:none;")
+            painter.setPen(QColor(DANGER))
+            serial = "Sin serial"
+        painter.setFont(self._font_ser)
+        r_ser = QRect(cx + 4, ser_y, cw - 8, 18)
+        painter.drawText(r_ser, Qt.AlignCenter, serial)
 
-    def set_selected(self, v: bool):
-        self._selected = v
-        self._update_style()
+        # comment dot
+        if comment:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(INFO))
+            painter.drawEllipse(cx + cw - 14, cy + 24, 8, 8)
 
-    def set_cut_point(self, v: bool):
-        self._is_cut = v
-        self._update_style()
+        painter.restore()
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._press_pos = event.pos()
-        super().mousePressEvent(event)
+    def sizeHint(self, option, index):
+        return QSize(CARD_W, CARD_H)
 
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton:
-            if (event.pos() - self._press_pos).manhattanLength() > 10:
-                drag = QDrag(self)
-                mime = QMimeData()
-                mime.setText(str(self.page_index))
-                drag.setMimeData(mime)
-                pix = self.grab()
-                drag.setPixmap(pix.scaled(THUMB_W//2, THUMB_H//2,
-                                          Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                drag.setHotSpot(event.pos())
-                drag.exec(Qt.MoveAction)
-        super().mouseMoveEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        self.fullscreen_requested.emit(self.page_index)
-
-    def _ctx_menu(self, pos):
-        menu = QMenu(self)
-        act_bm = menu.addAction("Añadir/quitar marcador…")
-        act_cm = menu.addAction("Añadir/quitar comentario…")
-        menu.addSeparator()
-        cut_lbl = "Quitar punto de corte" if self._is_cut else "Marcar como punto de corte"
-        act_cut = menu.addAction(cut_lbl)
-        menu.addSeparator()
-        act_full = menu.addAction("Ver a pantalla completa")
-        menu.addSeparator()
-        act_move_before = menu.addAction("Mover antes de…")
-        act_move_after  = menu.addAction("Mover después de…")
-        menu.addSeparator()
-        act_del = menu.addAction("Eliminar página")
-        action = menu.exec(self.mapToGlobal(pos))
-        if action == act_bm:
-            self.bookmark_clicked.emit(self.page_index)
-        elif action == act_cm:
-            self.comment_clicked.emit(self.page_index)
-        elif action == act_cut:
-            self.cut_toggled.emit(self.page_index)
-        elif action == act_full:
-            self.fullscreen_requested.emit(self.page_index)
-        elif action == act_move_before:
-            self.move_before_requested.emit(self.page_index)
-        elif action == act_move_after:
-            self.move_after_requested.emit(self.page_index)
-        elif action == act_del:
-            self.delete_requested.emit(self.page_index)
-
-    def _update_style(self):
-        if self._is_cut:
-            bg = SURFACE
-            border = f"1px solid {WARNING}"
-        elif self._selected:
-            bg = SURFACE2
-            border = f"2px solid {SURFACE3}"
-        else:
-            bg = SURFACE
-            border = "1px solid transparent"
-        self.setStyleSheet(
-            f"ThumbnailCard {{ border: {border}; border-radius: 8px; background: {bg}; }}")
+    def editorEvent(self, event, model, option, index):
+        if event.type() == QEvent.MouseButtonRelease:
+            r = option.rect
+            cx = r.x() + 8
+            cy = r.y() + 8
+            cw = r.width() - 16
+            check_rect = QRect(cx + cw - 22, cy + 5, 16, 16)
+            if check_rect.contains(event.pos()):
+                checked = bool(model.data(index, _CHECKED_ROLE) or False)
+                model.setData(index, not checked, _CHECKED_ROLE)
+                return True
+        return super().editorEvent(event, model, option, index)
 
 
-class ThumbnailGrid(QScrollArea):
+def _draw_checkbox(painter, rect, checked):
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(QColor(BORDER), 1))
+    painter.setBrush(QColor(BG) if not checked else QColor(ACCENT))
+    painter.drawRoundedRect(rect, 3, 3)
+    if checked:
+        painter.setPen(QPen(QColor(TEXT), 2))
+        x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+        painter.drawLine(x + 3, y + h // 2, x + w // 2, y + h - 3)
+        painter.drawLine(x + w // 2, y + h - 3, x + w - 3, y + 3)
+    painter.restore()
+
+
+class ThumbnailGrid(QListView):
     page_selected        = Signal(int)
     cut_toggled          = Signal(int)
     page_deleted         = Signal(int)
@@ -1433,34 +1586,44 @@ class ThumbnailGrid(QScrollArea):
     comment_requested    = Signal(int, str)
     checked_changed      = Signal(set)
 
-    CARD_W = THUMB_W + 30
-
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWidgetResizable(True)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.setStyleSheet("border: none;")
+        self._model = ThumbnailModel(self)
+        self.setModel(self._model)
 
-        self._container = QWidget()
-        self._container.setAcceptDrops(True)
-        self._grid = QGridLayout(self._container)
-        self._grid.setContentsMargins(10, 10, 10, 10)
-        self._grid.setSpacing(8)
-        self.setWidget(self._container)
+        self._delegate = ThumbnailDelegate(self)
+        self.setItemDelegate(self._delegate)
 
-        self._cards: list[ThumbnailCard] = []
+        self.setFlow(QListView.LeftToRight)
+        self.setWrapping(True)
+        self.setViewMode(QListView.IconMode)
+        self.setResizeMode(QListView.Adjust)
+        self.setGridSize(QSize(CARD_W, CARD_H))
+        self.setSpacing(8)
+        self.setMovement(QListView.Static)
+
+        self.setSelectionMode(QAbstractItemView.NoSelection)
+        self.setDragDropMode(QAbstractItemView.NoDragDrop)
+        self.setAcceptDrops(True)
+        self.viewport().setAcceptDrops(True)
+
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._ctx_menu)
+
         self._selected: int = -1
-        self._cols: int = 4
         self._checked: set[int] = set()
 
-        self._drop_indicator = QFrame(self._container)
+        self._drop_indicator = QFrame(self.viewport())
         self._drop_indicator.setStyleSheet(f"background:{INFO}; border:none; border-radius:1px;")
         self._drop_indicator.setFixedWidth(3)
         self._drop_indicator.hide()
 
-        self.viewport().setAcceptDrops(True)
+        self.clicked.connect(self._on_clicked)
+        self.doubleClicked.connect(self._on_double_clicked)
+        self._model.dataChanged.connect(self._on_model_data_changed)
         self.viewport().installEventFilter(self)
+
+    # ---- Drag / Drop ----
 
     def eventFilter(self, obj, event):
         if obj is self.viewport():
@@ -1497,8 +1660,7 @@ class ThumbnailGrid(QScrollArea):
     def _on_drop(self, event):
         if event.mimeData().hasText():
             from_idx = int(event.mimeData().text())
-            to_idx = self._target_index_from_pos(
-                self._container.mapFrom(self.viewport(), event.pos()))
+            to_idx = self._target_index_from_pos(event.pos())
             event.setDropAction(Qt.MoveAction)
             event.accept()
             self._drop_indicator.hide()
@@ -1508,53 +1670,84 @@ class ThumbnailGrid(QScrollArea):
             event.ignore()
 
     def _update_drop_indicator(self, viewport_pos: QPoint):
-        pos = self._container.mapFrom(self.viewport(), viewport_pos)
-        idx = self._target_index_from_pos(pos)
-        if idx < len(self._cards) and idx >= 0:
-            geo = self._cards[idx].geometry()
-            self._drop_indicator.setGeometry(geo.left() - 2, geo.top(), 3, geo.height())
-            self._drop_indicator.raise_()
-            self._drop_indicator.show()
-        elif idx >= len(self._cards) and self._cards:
-            geo = self._cards[-1].geometry()
-            self._drop_indicator.setGeometry(geo.right() - 1, geo.top(), 3, geo.height())
+        idx = self.indexAt(viewport_pos)
+        if idx.isValid():
+            rect = self.visualRect(idx)
+            mid = rect.x() + rect.width() // 2
+            x = rect.x() if viewport_pos.x() < mid else rect.right()
+            self._drop_indicator.setGeometry(x - 1, rect.y(), 3, rect.height())
             self._drop_indicator.raise_()
             self._drop_indicator.show()
         else:
-            self._drop_indicator.hide()
+            n = self._model.rowCount()
+            if n:
+                last = self._model.index(n - 1, 0)
+                lr = self.visualRect(last)
+                self._drop_indicator.setGeometry(lr.right() - 1, lr.y(), 3, lr.height())
+                self._drop_indicator.raise_()
+                self._drop_indicator.show()
+            else:
+                self._drop_indicator.hide()
 
-    def _target_index_from_pos(self, container_pos: QPoint) -> int:
-        if not self._cards:
-            return 0
-        best_i = 0
-        best_d = float("inf")
-        for i, c in enumerate(self._cards):
-            d = (container_pos - c.geometry().center()).manhattanLength()
-            if d < best_d:
-                best_d = d
-                best_i = i
-        g = self._cards[best_i].geometry()
-        if container_pos.x() < g.center().x():
-            return best_i
-        else:
-            return best_i + 1
+    def _target_index_from_pos(self, viewport_pos: QPoint) -> int:
+        idx = self.indexAt(viewport_pos)
+        if idx.isValid():
+            rect = self.visualRect(idx)
+            if viewport_pos.x() < rect.x() + rect.width() // 2:
+                return idx.row()
+            return idx.row() + 1
+        return self._model.rowCount()
 
-    def add_page(self, index: int, image: np.ndarray) -> ThumbnailCard:
-        card = ThumbnailCard(index, image)
-        card.clicked.connect(self._on_clicked)
-        card.cut_toggled.connect(self.cut_toggled)
-        card.delete_requested.connect(self.page_deleted)
-        card.fullscreen_requested.connect(self.fullscreen_requested)
-        card.checked_toggled.connect(self._on_checked_toggled)
-        card.bookmark_clicked.connect(self._on_card_bookmark)
-        card.comment_clicked.connect(self._on_card_comment)
-        card.move_before_requested.connect(self._on_move_before)
-        card.move_after_requested.connect(self._on_move_after)
-        self._cards.append(card)
-        i = len(self._cards) - 1
-        self._grid.addWidget(card, i // self._cols, i % self._cols)
-        self._grid.setRowStretch(self._grid.rowCount(), 1)
-        return card
+    # ---- Context menu ----
+
+    def _ctx_menu(self, pos):
+        idx = self.indexAt(pos)
+        if not idx.isValid():
+            return
+        row = idx.row()
+        item = self._model._items[row]
+
+        menu = QMenu(self)
+        act_bm = menu.addAction("Añadir/quitar marcador…")
+        act_cm = menu.addAction("Añadir/quitar comentario…")
+        menu.addSeparator()
+        cut_lbl = "Quitar punto de corte" if item.is_cut else "Marcar como punto de corte"
+        act_cut = menu.addAction(cut_lbl)
+        menu.addSeparator()
+        act_full = menu.addAction("Ver a pantalla completa")
+        menu.addSeparator()
+        act_move_before = menu.addAction("Mover antes de…")
+        act_move_after  = menu.addAction("Mover después de…")
+        menu.addSeparator()
+        act_del = menu.addAction("Eliminar página")
+        action = menu.exec(self.viewport().mapToGlobal(pos))
+
+        if action == act_bm:
+            self._on_card_bookmark(row)
+        elif action == act_cm:
+            self._on_card_comment(row)
+        elif action == act_cut:
+            self.cut_toggled.emit(row)
+        elif action == act_full:
+            self.fullscreen_requested.emit(row)
+        elif action == act_move_before:
+            self._on_move_before(row)
+        elif action == act_move_after:
+            self._on_move_after(row)
+        elif action == act_del:
+            self.page_deleted.emit(row)
+
+    # ---- Signal helpers ----
+
+    def _on_model_data_changed(self, top_left, bottom_right, roles):
+        if _CHECKED_ROLE in roles:
+            for row in range(top_left.row(), bottom_right.row() + 1):
+                item = self._model._items[row]
+                if item.checked:
+                    self._checked.add(item.index)
+                else:
+                    self._checked.discard(item.index)
+            self.checked_changed.emit(self._checked.copy())
 
     def _on_card_bookmark(self, index: int):
         from PySide6.QtWidgets import QApplication
@@ -1585,7 +1778,7 @@ class ThumbnailGrid(QScrollArea):
             self.comment_requested.emit(index, text)
 
     def _on_move_before(self, from_idx: int):
-        n = len(self._cards)
+        n = self._model.rowCount()
         target, ok = QInputDialog.getInt(
             self, "Mover página",
             f"Mover página {from_idx + 1} antes de la página:",
@@ -1597,7 +1790,7 @@ class ThumbnailGrid(QScrollArea):
         self.reorder_requested.emit(from_idx, to_idx)
 
     def _on_move_after(self, from_idx: int):
-        n = len(self._cards)
+        n = self._model.rowCount()
         target, ok = QInputDialog.getInt(
             self, "Mover página",
             f"Mover página {from_idx + 1} después de la página:",
@@ -1608,118 +1801,74 @@ class ThumbnailGrid(QScrollArea):
         to_idx = target_idx + (1 if from_idx > target_idx else 0)
         self.reorder_requested.emit(from_idx, to_idx)
 
-    def _on_checked_toggled(self, index: int, checked: bool):
-        if checked:
-            self._checked.add(index)
-        else:
-            self._checked.discard(index)
-        self.checked_changed.emit(self._checked.copy())
+    def _on_clicked(self, index: QModelIndex):
+        self.select(index.row())
+        self.page_selected.emit(index.row())
+
+    def _on_double_clicked(self, index: QModelIndex):
+        self.fullscreen_requested.emit(index.row())
+
+    # ---- Public API ----
+
+    @property
+    def count(self) -> int:
+        return self._model.rowCount()
+
+    def add_page(self, index: int, image: np.ndarray):
+        self._model.add_page(index, image)
+
+    def remove_page(self, index: int):
+        self._model.remove_page(index)
+        self._checked.discard(index)
+        if self._selected >= self._model.rowCount():
+            self._selected = self._model.rowCount() - 1
+
+    def update_image(self, index: int, image: np.ndarray):
+        self._model.update_image(index, image)
+
+    def set_serial(self, index: int, serial: str, confidence: float):
+        self._model.set_serial(index, serial, confidence)
+
+    def set_cut(self, index: int, is_cut: bool):
+        self._model.set_cut(index, is_cut)
+
+    def set_bookmark(self, index: int, label: str):
+        self._model.set_bookmark(index, label)
+
+    def set_bookmarks(self, index: int, labels: list[tuple[int, str]]):
+        self._model.set_bookmarks(index, labels)
+
+    def select(self, index: int):
+        if 0 <= self._selected < self._model.rowCount():
+            self._model.set_selected(self._selected, False)
+        self._selected = index
+        if 0 <= index < self._model.rowCount():
+            self._model.set_selected(index, True)
+            self.scrollTo(self._model.index(index, 0))
+
+    def reorder_cards(self, from_idx: int, to_idx: int):
+        self._model.reorder(from_idx, to_idx)
+        if self._selected == from_idx:
+            self._selected = to_idx
+        elif from_idx < self._selected <= to_idx:
+            self._selected -= 1
+        elif from_idx > self._selected >= to_idx:
+            self._selected += 1
+
+    def clear_all(self):
+        self._model.clear_all()
+        self._selected = -1
+        self._checked.clear()
 
     def check_all(self):
-        for card in self._cards:
-            card.set_checked(True)
-            self._checked.add(card.page_index)
+        self._model.set_all_checked(True)
+        self._checked = set(range(self._model.rowCount()))
         self.checked_changed.emit(self._checked.copy())
 
     def uncheck_all(self):
-        for card in self._cards:
-            card.set_checked(False)
+        self._model.set_all_checked(False)
         self._checked.clear()
         self.checked_changed.emit(set())
 
     def get_checked_indices(self) -> set[int]:
         return self._checked.copy()
-
-    def update_image(self, index: int, image: np.ndarray):
-        c = self._card(index)
-        if c:
-            c.set_image(image)
-
-    def set_serial(self, index: int, serial: str, confidence: float):
-        c = self._card(index)
-        if c:
-            c.set_serial(serial, confidence)
-
-    def set_cut(self, index: int, is_cut: bool):
-        c = self._card(index)
-        if c:
-            c.set_cut_point(is_cut)
-
-    def set_bookmark(self, index: int, label: str):
-        c = self._card(index)
-        if c:
-            c.set_bookmark(label)
-
-    def set_bookmarks(self, index: int, labels: list[tuple[int, str]]):
-        c = self._card(index)
-        if c:
-            first = labels[0][1] if labels else ""
-            n = len(labels)
-            display = f"{first} 📑{n}" if n > 1 else first
-            c.set_bookmark(display)
-
-    def reorder_cards(self, from_idx: int, to_idx: int):
-        if from_idx == to_idx:
-            return
-        if 0 <= from_idx < len(self._cards) and 0 <= to_idx <= len(self._cards):
-            card = self._cards.pop(from_idx)
-            self._cards.insert(to_idx, card)
-            for i, c in enumerate(self._cards):
-                c.page_index = i
-                c._num.setText(str(i + 1))
-            self._relayout()
-
-    def remove_page(self, index: int):
-        c = self._card(index)
-        if c:
-            self._cards.remove(c)
-            c.deleteLater()
-        for i, card in enumerate(self._cards):
-            card.page_index = i
-            card._num.setText(str(i + 1))
-        if self._selected >= len(self._cards):
-            self._selected = len(self._cards) - 1
-        self._relayout()
-
-    def select(self, index: int):
-        old = self._card(self._selected)
-        if old:
-            old.set_selected(False)
-        self._selected = index
-        new = self._card(index)
-        if new:
-            new.set_selected(True)
-            self.ensureWidgetVisible(new)
-
-    def clear_all(self):
-        for c in self._cards:
-            c.deleteLater()
-        self._cards.clear()
-        self._selected = -1
-        self._checked.clear()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        cols = max(1, self.viewport().width() // self.CARD_W)
-        if cols != self._cols:
-            self._cols = cols
-            self._relayout()
-
-    def _relayout(self):
-        while self._grid.count():
-            item = self._grid.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
-        for i, card in enumerate(self._cards):
-            self._grid.addWidget(card, i // self._cols, i % self._cols)
-        self._grid.setRowStretch(self._grid.rowCount(), 1)
-
-    def _card(self, index: int) -> ThumbnailCard | None:
-        for c in self._cards:
-            if c.page_index == index:
-                return c
-        return None
-
-    def _on_clicked(self, index: int):
-        self.select(index)
-        self.page_selected.emit(index)

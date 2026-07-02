@@ -1009,7 +1009,7 @@ class DocumentPage(QWidget):
                 item.setText(str(r + 1))
         self._refresh_ocr_summary()
         self._update_page_count()
-        if len(self.grid._cards) == 0:
+        if self.grid.count == 0:
             self._empty.setVisible(True)
             self._splitter.setVisible(False)
             self._current_idx = -1
@@ -1080,21 +1080,18 @@ class DocumentPage(QWidget):
         self._ocr_table.setRowCount(0)
         total = len(pages_data)
         for i, pd in enumerate(pages_data):
-            c = self.grid.add_page(pd.index, pd.display_image)
+            self.grid.add_page(pd.index, pd.display_image)
             if pd.serial:
-                c.set_serial(pd.serial, pd.serial_confidence)
+                self.grid.set_serial(pd.index, pd.serial, pd.serial_confidence)
             if pd.is_cut_point:
-                c.set_cut_point(True)
+                self.grid.set_cut(pd.index, True)
             if pd.bookmarks:
                 first = pd.bookmarks[0][1] if pd.bookmarks else ""
                 n = len(pd.bookmarks)
                 display = f"{first} 📑{n}" if n > 1 else first
-                c.set_bookmark(display)
+                self.grid.set_bookmark(pd.index, display)
             elif pd.bookmark:
-                c.set_bookmark(pd.bookmark)
-            if pd.comment:
-                preview = pd.comment[:40] + "…" if len(pd.comment) > 40 else pd.comment
-                c.set_comment(preview)
+                self.grid.set_bookmark(pd.index, pd.bookmark)
             self._add_ocr_row(pd.index, pd.display_image)
             if pd.serial:
                 self.set_ocr_result(pd.index, pd.serial, pd.serial_confidence)
@@ -1319,7 +1316,7 @@ class DocumentPage(QWidget):
         return -1
 
     def _update_page_count(self):
-        n = len(self.grid._cards)
+        n = self.grid.count
         self._page_count_lbl.setText(f"{n} página(s)" if n else "")
 
     def _set_export_buttons(self, enabled: bool, text: str | None = None):
