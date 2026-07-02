@@ -12,7 +12,9 @@ DEFAULTS: dict[str, Any] = {
                      "pdf_dpi": 200},
     "antecedentes": {"serial_inicial": 1, "serial_padding": 5},
     "ui":           {"last_page": "import"},
-    "shortcuts":    {"fullscreen_bookmark": "Insert"},
+    "shortcuts":    {"fullscreen_bookmark": "Insert",
+                     "fullscreen_autobookmark": "Up",
+                     "import_pdf": "Ctrl+P"},
 }
 CONFIG_PATH = Path.home() / ".miregistrodigital" / "config.json"
 
