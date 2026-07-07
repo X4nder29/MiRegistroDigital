@@ -570,7 +570,6 @@ class MainWindow(QMainWindow):
         dp.export_ant_requested.connect(self._on_ant_export)
         dp.export_ant_single_pdf.connect(self._on_ant_export_single_pdf)
         dp.export_ant_split_bookmark.connect(self._on_ant_export_split_bookmark)
-        dp.bookmarks_export_requested.connect(self._on_bookmarks_export)
         dp.merge_requested.connect(self._on_merge_pdfs)
 
         dp.set_parallel_workers(self._cfg.get("ocr", "parallel_workers", 4))
@@ -849,53 +848,6 @@ class MainWindow(QMainWindow):
                 self._custom_handlers.pop(jid, None)
             self._custom_handlers[job_id] = (done, err)
 
-    @Slot(list, str, int)
-    def _on_bookmarks_export(self, pages_data: list, folder: str, dpi: int):
-        logger.info("Exportaci\u00f3n con marcadores solicitada -> %s", folder)
-        import cv2
-        import fitz
-        from PySide6.QtCore import QThreadPool, QRunnable
-
-        self._doc_page.bookmarks_export_started()
-
-        class _Worker(QRunnable):
-            class S(QObject):
-                progress = Signal(int, int)
-                finished = Signal(str)
-                error    = Signal(str)
-            def __init__(self, pages, out, dpi):
-                super().__init__()
-                self.s = _Worker.S()
-                self.pages, self.out, self.dpi = pages, out, dpi
-            @Slot()
-            def run(self):
-                try:
-                    doc = fitz.Document()
-                    for i, item in enumerate(self.pages):
-                        self.s.progress.emit(i + 1, len(self.pages))
-                        img = item["image"]
-                        h, w = img.shape[:2]
-                        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                        page = doc.new_page(width=w, height=h)
-                        page.insert_image(page.rect, stream=buf.tobytes())
-                    tocs = [[1, item["label"], i + 1] for i, item in enumerate(self.pages)]
-                    doc.set_toc(tocs)
-                    doc.save(self.out, garbage=4, deflate=True)
-                    doc.close()
-                    self.s.finished.emit(self.out)
-                except Exception as e:
-                    self.s.error.emit(str(e))
-
-        output = Path(folder) / "registros_marcadores.pdf"
-        output = self._unique_path(output)
-        w = _Worker(pages_data, str(output), dpi)
-        w.s.progress.connect(self._doc_page.show_progress)
-        w.s.finished.connect(self._doc_page.bookmarks_export_finished)
-        w.s.finished.connect(lambda _: self.statusBar().showMessage("PDF con marcadores generado", 4000))
-        w.s.error.connect(self._doc_page.bookmarks_export_error)
-        w.s.error.connect(lambda msg: self.statusBar().showMessage(msg, 4000))
-        QThreadPool.globalInstance().start(w)
-
     @staticmethod
     def _unique_path(path: Path) -> Path:
         if not path.exists():
@@ -973,6 +925,7 @@ class MainWindow(QMainWindow):
     def _on_ant_export_single_pdf(self, params: dict):
         logger.info("Antecedentes PDF \u00fanico solicitado -> %s", params.get("folder"))
         self._doc_page.export_single_started()
+        output_name = self._project_path.stem + "_bookmarked.pdf" if self._project_path else None
         job_id = self._export.export_ant_single_pdf(
             params["folder"],
             params["serial_ini"],
@@ -980,6 +933,7 @@ class MainWindow(QMainWindow):
             params.get("desde", 0),
             params.get("hasta", 0),
             "Antecedentes PDF \u00fanico",
+            output_name=output_name,
         )
         if not job_id:
             self._doc_page.export_single_error("No hay p\u00e1ginas para exportar.")

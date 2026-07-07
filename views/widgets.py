@@ -1526,16 +1526,13 @@ class ThumbnailDelegate(QStyledItemDelegate):
             painter.drawText(r_bm, Qt.AlignCenter, bm)
 
         # serial
-        ser_y = bm_y + (18 if bm else 4)
         if serial:
+            ser_y = bm_y + (18 if bm else 4)
             s_color = SUCCESS if conf >= 0.7 else (WARNING if conf > 0 else TEXT_SEC)
             painter.setPen(QColor(s_color))
-        else:
-            painter.setPen(QColor(DANGER))
-            serial = "Sin serial"
-        painter.setFont(self._font_ser)
-        r_ser = QRect(cx + 4, ser_y, cw - 8, 18)
-        painter.drawText(r_ser, Qt.AlignCenter, serial)
+            painter.setFont(self._font_ser)
+            r_ser = QRect(cx + 4, ser_y, cw - 8, 18)
+            painter.drawText(r_ser, Qt.AlignCenter, serial)
 
         # comment dot
         if comment:

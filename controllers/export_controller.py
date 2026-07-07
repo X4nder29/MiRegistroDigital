@@ -259,7 +259,8 @@ class ExportController(QObject):
         return job.id
 
     def export_ant_single_pdf(self, folder: str, serial_ini: int, padding: int,
-                               desde: int = 0, hasta: int = 0, label: str = "") -> str:
+                               desde: int = 0, hasta: int = 0, label: str = "",
+                               output_name: str | None = None) -> str:
         """Un solo PDF con todas las páginas y marcadores como bookmarks PDF. Retorna job_id."""
         pages = self._m.pages
         if hasta > 0:
@@ -275,7 +276,8 @@ class ExportController(QObject):
         self._jobs[job.id] = job
         self.job_created.emit(job)
 
-        pdf_path = unique(Path(folder) / "antecedentes_unico.pdf")
+        name = output_name if output_name else "antecedentes_unico.pdf"
+        pdf_path = unique(Path(folder) / name)
         dpi = self._cfg.get("output", "pdf_dpi", 200)
 
         class _Worker(QRunnable):
@@ -445,8 +447,11 @@ class ExportController(QObject):
                         for i, page in enumerate(self.pages):
                             self.s.progress.emit(self.job.id, i + 1, len(self.pages))
                             doc.insert_pdf(src, from_page=page.source_page, to_page=page.source_page)
+                            p = doc[-1]
+                            annots = list(p.annots() or [])
+                            for a in annots:
+                                p.delete_annot(a)
                             if page.comment:
-                                p = doc[-1]
                                 r = p.rect
                                 bh = min(60, r.height // 3)
                                 rect = fitz.Rect(0, r.y1 - bh, r.x1, r.y1)
@@ -575,8 +580,11 @@ def _merge_pdf_src(doc: fitz.Document, src: str, pages: list[PageData]):
         if p.source_page < 0:
             continue
         doc.insert_pdf(src_doc, from_page=p.source_page, to_page=p.source_page)
+        page = doc[-1]
+        annots = list(page.annots() or [])
+        for a in annots:
+            page.delete_annot(a)
         if p.comment:
-            page = doc[-1]
             r = page.rect
             bh = min(60, r.height // 3)
             rect = fitz.Rect(0, r.y1 - bh, r.x1, r.y1)

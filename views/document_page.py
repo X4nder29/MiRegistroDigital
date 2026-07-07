@@ -63,7 +63,6 @@ class DocumentPage(QWidget):
     export_ant_single_pdf         = Signal(dict)
     export_ant_split_bookmark     = Signal(dict)
 
-    bookmarks_export_requested = Signal(list, str, int)
     merge_requested            = Signal(list, str)
 
     COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS, COL_BOOKMARK, COL_COMMENT = 0, 1, 2, 3, 4, 5
@@ -152,11 +151,6 @@ class DocumentPage(QWidget):
         btn_pdf.setToolTip("Importar PDF multipágina")
         btn_pdf.clicked.connect(self._open_pdf)
 
-        btn_img = QPushButton("  Imágenes")
-        btn_img.setFixedHeight(34)
-        btn_img.setToolTip("Importar imágenes (JPG, PNG, TIFF, BMP, WEBP)")
-        btn_img.clicked.connect(self._open_images)
-
         self._btn_cancel_import = QPushButton("Cancelar")
         self._btn_cancel_import.setFixedHeight(30)
         self._btn_cancel_import.setStyleSheet(f"color:{DANGER};")
@@ -164,45 +158,7 @@ class DocumentPage(QWidget):
         self._btn_cancel_import.clicked.connect(self.import_cancel_requested)
 
         lay.addWidget(btn_pdf)
-        lay.addWidget(btn_img)
         lay.addWidget(self._btn_cancel_import)
-        lay.addSpacing(12)
-
-        sep = QFrame()
-        sep.setFixedWidth(1)
-        sep.setFixedHeight(28)
-        sep.setStyleSheet(f"background:{BORDER}; border:none;")
-        lay.addWidget(sep)
-        lay.addSpacing(12)
-
-        self._btn_ocr = QPushButton("  OCR todas")
-        self._btn_ocr.setProperty("primary", True)
-        self._btn_ocr.setFixedHeight(34)
-        self._btn_ocr.clicked.connect(self.ocr_all_requested)
-
-        self._btn_cancel_ocr = QPushButton("Cancelar OCR")
-        self._btn_cancel_ocr.setFixedHeight(30)
-        self._btn_cancel_ocr.setStyleSheet(f"color:{DANGER};")
-        self._btn_cancel_ocr.setVisible(False)
-        self._btn_cancel_ocr.clicked.connect(self.ocr_cancel_requested)
-
-        lay.addWidget(self._btn_cancel_ocr)
-        lay.addWidget(self._btn_ocr)
-
-        lay.addSpacing(12)
-        sep2 = QFrame()
-        sep2.setFixedWidth(1)
-        sep2.setFixedHeight(28)
-        sep2.setStyleSheet(f"background:{BORDER}; border:none;")
-        lay.addWidget(sep2)
-        lay.addSpacing(12)
-
-        self._btn_export_menu = QPushButton("  Exportar ▼")
-        self._btn_export_menu.setFixedHeight(34)
-        self._btn_export_menu.setToolTip("Opciones de exportación")
-        self._btn_export_menu.clicked.connect(self._switch_export_tab)
-
-        lay.addWidget(self._btn_export_menu)
         lay.addStretch()
 
         self._page_count_lbl = QLabel("")
@@ -490,27 +446,6 @@ class DocumentPage(QWidget):
         cl.addWidget(self._btn_exp_merge)
 
         v.addWidget(civil_grp)
-
-        # ── Bookmarks PDF export ──
-        bm_grp = QGroupBox("PDF con marcadores")
-        bl = QVBoxLayout(bm_grp)
-        bl.setSpacing(6)
-        self._btn_exp_bookmarks = QPushButton("  Generar PDF con marcadores")
-        self._btn_exp_bookmarks.setFixedHeight(32)
-        self._btn_exp_bookmarks.clicked.connect(self._do_export_bookmarks_pdf)
-        self._btn_exp_bookmarks_dpi_lbl = QLabel("DPI:")
-        self._btn_exp_bookmarks_dpi_lbl.setStyleSheet("font-size:8pt; border:none; color:{TEXT_DIM};")
-        self._bm_dpi = QSpinBox()
-        self._bm_dpi.setRange(72, 600)
-        self._bm_dpi.setValue(200)
-        self._bm_dpi.setFixedWidth(65)
-        dpi_row = QHBoxLayout()
-        dpi_row.addWidget(self._btn_exp_bookmarks_dpi_lbl)
-        dpi_row.addWidget(self._bm_dpi)
-        dpi_row.addStretch()
-        bl.addWidget(self._btn_exp_bookmarks)
-        bl.addLayout(dpi_row)
-        v.addWidget(bm_grp)
 
         # ── Antecedentes exports ──
         ant_grp = QGroupBox("Antecedentes (agrupados por corte)")
@@ -863,25 +798,6 @@ class DocumentPage(QWidget):
         if f:
             self.export_original_pdf_requested.emit(f)
 
-    def _do_export_bookmarks_pdf(self):
-        from PySide6.QtWidgets import QApplication
-        mw = QApplication.instance().activeWindow()
-        if not mw or not hasattr(mw, '_model'):
-            return
-        pages_data = []
-        for page in mw._model.pages:
-            pages_data.append({
-                "index": page.index,
-                "label": page.final_label,
-                "image": page.display_image,
-            })
-        if not pages_data:
-            QMessageBox.warning(self, "Sin datos", "No hay páginas para exportar.")
-            return
-        folder = self._export_get_folder()
-        if folder:
-            self.bookmarks_export_requested.emit(pages_data, folder, self._bm_dpi.value())
-
     def _switch_merge_tab(self):
         """Placeholder — merge de PDFs externos."""
         from PySide6.QtWidgets import QFileDialog, QMessageBox
@@ -935,19 +851,9 @@ class DocumentPage(QWidget):
         }
         self.export_ant_split_bookmark.emit(params)
 
-    def _switch_export_tab(self):
-        self._tabs.setCurrentIndex(3)
-
     # ═══════════════════════════════════════════════════════════════
     #  INTERNAL: Import helpers
     # ═══════════════════════════════════════════════════════════════
-
-    def _open_images(self):
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "Seleccionar imágenes",
-            "", "Imágenes (*.jpg *.jpeg *.png *.tiff *.tif *.bmp *.webp);;Todos (*.*)")
-        if paths:
-            self.import_images_requested.emit([Path(p) for p in paths])
 
     def _open_pdf(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -1142,16 +1048,10 @@ class DocumentPage(QWidget):
             self._refresh_info_tab()
 
     def ocr_started(self):
-        self._btn_ocr.setEnabled(False)
-        self._btn_ocr.setText("Procesando…")
-        self._btn_cancel_ocr.setVisible(True)
         self._ocr_prog.setRange(0, 0)
         self._ocr_prog.setVisible(True)
 
     def ocr_finished(self):
-        self._btn_ocr.setEnabled(True)
-        self._btn_ocr.setText("  OCR todas")
-        self._btn_cancel_ocr.setVisible(False)
         self._ocr_prog.setVisible(False)
 
     def import_busy(self, busy: bool):
@@ -1187,9 +1087,6 @@ class DocumentPage(QWidget):
         self._ant_chk_range.setChecked(False)
         self._ant_desde.setValue(1)
         self._ant_hasta.setValue(100)
-        self._btn_ocr.setEnabled(True)
-        self._btn_ocr.setText("  OCR todas")
-        self._btn_cancel_ocr.setVisible(False)
         self._btn_cancel_import.setVisible(False)
         self._update_page_count()
         self._refresh_ocr_summary()
@@ -1263,18 +1160,6 @@ class DocumentPage(QWidget):
     def merge_error(self, msg: str):
         pass
 
-    def bookmarks_export_started(self):
-        self._btn_exp_bookmarks.setEnabled(False)
-        self._btn_exp_bookmarks.setText("Generando…")
-
-    def bookmarks_export_finished(self, path: str):
-        self._btn_exp_bookmarks.setEnabled(True)
-        self._btn_exp_bookmarks.setText("  Generar PDF con marcadores")
-
-    def bookmarks_export_error(self, msg: str):
-        self._btn_exp_bookmarks.setEnabled(True)
-        self._btn_exp_bookmarks.setText("  Generar PDF con marcadores")
-
     # ── Bookmark request from context menu ──
 
     def _on_bookmark_requested(self, index: int):
@@ -1323,7 +1208,7 @@ class DocumentPage(QWidget):
         btns = [
             self._btn_exp_civil, self._btn_exp_civil_bm, self._btn_exp_orig,
             self._btn_exp_ant, self._btn_exp_ant_single, self._btn_exp_ant_split,
-            self._btn_exp_ant_orig, self._btn_exp_bookmarks,
+            self._btn_exp_ant_orig,
         ]
         for b in btns:
             b.setEnabled(enabled)
