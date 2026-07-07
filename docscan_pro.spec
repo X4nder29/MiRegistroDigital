@@ -30,9 +30,12 @@ HIDDEN = [
     *collect_submodules("sklearn"),
 ]
 
-# ── Datos adicionales (fonts, etc.) ─────────────────────────────────
+# ── Datos adicionales (fonts, iconos, etc.) ──────────────────────────
 font_path = Path("fonts")
 DATAS = [("fonts", "fonts")] if font_path.exists() and any(font_path.iterdir()) else []
+
+resources_path = Path("resources")
+DATAS += [("resources", "resources")] if resources_path.exists() else []
 
 DATAS += easyocr_datas + torch_datas + cv2_datas
 
@@ -67,7 +70,8 @@ exe = EXE(
     exclude_binaries=True,
     name="MiRegistroDigital",
     debug=False,
-    icon=None,
+    console=False,
+    icon="resources/app_icon.ico",
     upx=True,
 )
 

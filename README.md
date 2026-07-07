@@ -67,7 +67,7 @@ python main.py
 
 ```bash
 installer\build.bat
-# → dist\DocScanPro\DocScanPro.exe
+# → dist\MiRegistroDigital\MiRegistroDigital.exe
 ```
 
 ---

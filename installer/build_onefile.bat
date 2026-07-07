@@ -1,12 +1,12 @@
 @echo off
 REM ============================================================
-REM  MiRegistroDigital — Build ONE-FILE (un solo .exe)
-REM  Más portable pero más lento al iniciar y ocupa más RAM.
+REM  MiRegistroDigital - Build ONE-FILE (un solo .exe)
+REM  Mas portable pero mas lento al iniciar y ocupa mas RAM.
 REM ============================================================
-title MiRegistroDigital — One-File Build
+title MiRegistroDigital - One-File Build
 cd /d "%~dp0.."
 echo.
-echo  MiRegistroDigital — One-File Build
+echo  MiRegistroDigital - One-File Build
 echo  ====================================
 echo.
 
@@ -79,7 +79,7 @@ echo.
 
 if errorlevel 1 (
     echo.
-    echo  ERROR en la compilación.
+    echo  ERROR en la compilacion.
     pause & exit /b 1
 )
 

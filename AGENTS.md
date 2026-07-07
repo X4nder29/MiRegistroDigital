@@ -38,4 +38,4 @@ No hay tests, linter, typechecker ni CI configurados.
 - **Windows-only**: `pytwain` (TWAIN), batch files, paths Windows. Sin soporte cross-platform.
 - **Fuente**: `fonts/JetBrainsMonoNerdFont-Regular.ttf` opcional, no en git (`.gitignore` lo excluye). Se ignora si falta.
 - **Formato imagen**: Corrección de perspectiva y deskew con OpenCV (`image_utils.py`). OCR usa `enhance_for_ocr()` (CLAHE + binarización + morfología).
-- **Build**: `build.bat` referencia `docscan_pro.spec` — ese archivo no existe en repo (generado por PyInstaller). Puede fallar si no se ha generado antes. Preferir `build_onefile.bat` para builds limpias.
+- **Build**: `build.bat` usa `docscan_pro.spec` (tracked en git, en la raíz del repo) para generar `dist\MiRegistroDigital\MiRegistroDigital.exe` (onedir). Icono en `resources/app_icon.ico` (generado con `installer/make_icon.py` a partir de `resources/app_icon.svg`). `build_onefile.bat` es una ruta alterna con flags de PyInstaller duplicados manualmente — puede desviarse del `.spec`; preferir `build.bat` / el comando `/build-exe`.

@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  MiRegistroDigital — Build + Installer
+REM  MiRegistroDigital - Build + Installer
 REM
 REM  1. Compila el .exe con PyInstaller (multi-archivo)
 REM  2. Empaqueta el instalador con Inno Setup
@@ -8,10 +8,10 @@ REM
 REM  Requisito: Inno Setup 6+ instalado en %ProgramFiles%
 REM  Descargar: https://jrsoftware.org/isdl.php
 REM ============================================================
-title MiRegistroDigital — Build + Installer
+title MiRegistroDigital - Build + Installer
 cd /d "%~dp0.."
 echo.
-echo  MiRegistroDigital — Build + Installer
+echo  MiRegistroDigital - Build + Installer
 echo  =======================================
 echo.
 

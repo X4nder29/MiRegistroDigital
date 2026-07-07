@@ -1,13 +1,13 @@
 @echo off
 REM ============================================================
-REM  MiRegistroDigital — Compilar a .exe (multi-archivo)
-REM  Ejecutar desde la raíz del proyecto.
+REM  MiRegistroDigital - Compilar a .exe (multi-archivo)
+REM  Ejecutar desde la raiz del proyecto.
 REM  Usa .venv si existe, si no usa el Python del sistema.
 REM ============================================================
-title MiRegistroDigital — Build
+title MiRegistroDigital - Build
 cd /d "%~dp0.."
 echo.
-echo  MiRegistroDigital — Build
+echo  MiRegistroDigital - Build
 echo  ==========================
 echo.
 
@@ -34,8 +34,10 @@ if errorlevel 1 (
 )
 
 REM --- Limpiar builds anteriores ---
-if exist "dist\MiRegistroDigital"   rmdir /s /q "dist\MiRegistroDigital"
-if exist "build\MiRegistroDigital"  rmdir /s /q "build\MiRegistroDigital"
+REM  El directorio de trabajo de PyInstaller se llama como el .spec (docscan_pro),
+REM  no como el "name=" definido dentro de este.
+if exist "dist\MiRegistroDigital"  rmdir /s /q "dist\MiRegistroDigital"
+if exist "build\docscan_pro"       rmdir /s /q "build\docscan_pro"
 
 REM --- Build con el spec ---
 echo.
@@ -46,9 +48,16 @@ echo.
 
 if errorlevel 1 (
     echo.
-    echo  ERROR en la compilación.
+    echo  ERROR en la compilacion.
     pause & exit /b 1
 )
+
+REM --- Limpiar directorio de trabajo intermedio ---
+REM  build\docscan_pro contiene una copia del bootloader SIN la carpeta
+REM  _internal (esta solo se genera en dist\). Ejecutarla directamente
+REM  falla con "Failed to load Python DLL". Se borra para no dejar un
+REM  .exe roto junto al valido en dist\MiRegistroDigital\.
+if exist "build\docscan_pro" rmdir /s /q "build\docscan_pro"
 
 echo.
 echo  ==========================================
