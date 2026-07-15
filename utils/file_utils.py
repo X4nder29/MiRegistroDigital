@@ -58,3 +58,26 @@ def build_zip(entries: dict[str, bytes], path: Path):
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, data in entries.items():
             zf.writestr(name, data)
+
+
+def combine_registro_antecedente(registro_path: Path, antecedente_path: Path, out_path: Path) -> Path:
+    """Combina registro_path y antecedente_path en un solo PDF, registro primero.
+
+    Misma lógica que MainWindow._on_merge_pdfs (views/main_window.py) pero fija a
+    exactamente estas dos fuentes, con marcadores "Registro"/"Antecedente".
+    """
+    import fitz
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    dest = fitz.Document()
+    tocs = []
+    page_offset = 0
+    for label, path in (("Registro", registro_path), ("Antecedente", antecedente_path)):
+        src = fitz.Document(str(path))
+        dest.insert_pdf(src)
+        tocs.append([1, label, page_offset + 1])
+        page_offset += src.page_count
+        src.close()
+    dest.set_toc(tocs)
+    dest.save(str(out_path), garbage=4, deflate=True)
+    dest.close()
+    return out_path

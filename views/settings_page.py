@@ -55,6 +55,7 @@ class SettingsPage(QWidget):
         cv.addWidget(self._ocr_group())
         cv.addWidget(self._output_group())
         cv.addWidget(self._ant_group())
+        cv.addWidget(self._visualization_group())
         cv.addWidget(self._shortcuts_group())
         cv.addStretch()
 
@@ -120,6 +121,17 @@ class SettingsPage(QWidget):
         f.addRow("Dígitos del serial:", self._padding)
         return box
 
+    def _visualization_group(self) -> QGroupBox:
+        box = QGroupBox("Visualización")
+        f = QFormLayout(box)
+        row = QHBoxLayout()
+        self._viz_root = QLineEdit(); self._viz_root.setPlaceholderText("Carpeta raíz de Registros Civiles…")
+        btn = QPushButton("Examinar"); btn.setFixedHeight(32)
+        btn.clicked.connect(lambda: self._browse(self._viz_root))
+        row.addWidget(self._viz_root); row.addWidget(btn)
+        f.addRow("Carpeta raíz:", row)
+        return box
+
     def _shortcuts_group(self) -> QGroupBox:
         box = QGroupBox("Atajos de teclado")
         f = QFormLayout(box)
@@ -147,6 +159,7 @@ class SettingsPage(QWidget):
         self._pdf_dpi.setValue(c.get("output", "pdf_dpi", 200))
         self._serial_ini.setValue(c.get("antecedentes", "serial_inicial", 1))
         self._padding.setValue(c.get("antecedentes", "serial_padding", 5))
+        self._viz_root.setText(c.get("visualization", "root_folder", ""))
         self._shortcut_bookmark.setKeySequence(QKeySequence(c.get("shortcuts", "fullscreen_bookmark", "Insert")))
         self._shortcut_autobookmark.setKeySequence(QKeySequence(c.get("shortcuts", "fullscreen_autobookmark", "Up")))
         self._shortcut_import_pdf.setKeySequence(QKeySequence(c.get("shortcuts", "import_pdf", "Ctrl+P")))
@@ -164,6 +177,7 @@ class SettingsPage(QWidget):
         c.set("output",       "pdf_dpi",               self._pdf_dpi.value())
         c.set("antecedentes", "serial_inicial",        self._serial_ini.value())
         c.set("antecedentes", "serial_padding",        self._padding.value())
+        c.set("visualization", "root_folder",          self._viz_root.text().strip())
         c.set("shortcuts",    "fullscreen_bookmark",   self._shortcut_bookmark.keySequence().toString())
         c.set("shortcuts",    "fullscreen_autobookmark", self._shortcut_autobookmark.keySequence().toString())
         c.set("shortcuts",    "import_pdf",              self._shortcut_import_pdf.keySequence().toString())

@@ -26,9 +26,11 @@ from models.project_model import (
 from controllers.scan_controller import ScanController
 from controllers.ocr_controller import OCRController
 from controllers.export_controller import ExportController
+from controllers.visualization_controller import VisualizationController
 from views.document_page import DocumentPage
 from views.pdf_page import EditorPage
 from views.settings_page import SettingsPage
+from views.visualization_page import VisualizationPage
 from views.widgets import FullscreenViewer, ProcessListDialog
 from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2, INFO, WARNING
 
@@ -36,9 +38,10 @@ logger = logging.getLogger("docscan.main")
 
 
 _NAV = [
-    ("documentos",   "\U0001f4c4  Documentos"),
-    ("pdf",          "\U0001f4cb  Editor"),
-    ("settings",     "\u2699\ufe0f  Ajustes"),
+    ("documentos",     "\U0001f4c4  Documentos"),
+    ("pdf",            "\U0001f4cb  Editor"),
+    ("visualizacion",  "\U0001f441\ufe0f  Visualizaci\u00f3n"),
+    ("settings",       "\u2699\ufe0f  Ajustes"),
 ]
 
 
@@ -106,6 +109,7 @@ class MainWindow(QMainWindow):
         self._scan   = ScanController(self._model, self._cfg, self)
         self._ocr    = OCRController(self._model, self._cfg, self)
         self._export = ExportController(self._model, self._cfg, self)
+        self._viz    = VisualizationController(self._cfg, self)
 
         self._pending_pages: list = []
         self._fullscreen_viewer: FullscreenViewer | None = None
@@ -131,6 +135,9 @@ class MainWindow(QMainWindow):
         self._sb_serial.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
         self._sb_cut = QLabel("")
         self._sb_cut.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
+        self._viz_status = QLabel("")
+        self._viz_status.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
+        self.statusBar().addPermanentWidget(self._viz_status)
         self._btn_processes = QPushButton("Procesos")
         self._btn_processes.setFixedHeight(22)
         self._btn_processes.setStyleSheet(
@@ -164,9 +171,10 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         self._doc_page   = DocumentPage(config=self._cfg)
         self._pdf_page   = EditorPage(config=self._cfg)
+        self._viz_page   = VisualizationPage(self._cfg, self._viz)
         self._sett_page  = SettingsPage(self._cfg)
 
-        for page in (self._doc_page, self._pdf_page, self._sett_page):
+        for page in (self._doc_page, self._pdf_page, self._viz_page, self._sett_page):
             self._stack.addWidget(page)
 
         mid_layout.addWidget(self._stack)
@@ -524,7 +532,7 @@ class MainWindow(QMainWindow):
         return sidebar
 
     def _navigate(self, key: str):
-        idx = {"documentos": 0, "pdf": 1, "settings": 2}
+        idx = {"documentos": 0, "pdf": 1, "visualizacion": 2, "settings": 3}
         for k, btn in self._nav_btns.items():
             btn.setChecked(k == key)
         self._stack.setCurrentIndex(idx.get(key, 0))
@@ -604,6 +612,12 @@ class MainWindow(QMainWindow):
         # Other pages
         self._sett_page.settings_saved.connect(
             lambda: self.statusBar().showMessage("Configuraci\u00f3n guardada", 3000))
+        self._sett_page.settings_saved.connect(self._viz_page.on_settings_saved)
+        self._viz.scan_started.connect(self._on_viz_scan_started)
+        self._viz.scan_progress.connect(self._on_viz_scan_progress)
+        self._viz.scan_finished.connect(self._on_viz_scan_finished)
+        self._viz.scan_error.connect(
+            lambda msg: self.statusBar().showMessage(f"Visualización: {msg}", 4000))
         self._pdf_page.pdf_generated.connect(
             lambda p: self.statusBar().showMessage(f"PDF organizado guardado: {Path(p).name}"))
 
@@ -639,6 +653,15 @@ class MainWindow(QMainWindow):
         else:
             self._sb_serial.setText("")
             self._sb_cut.setText("")
+
+    def _on_viz_scan_started(self):
+        self._viz_status.setText("⏳ Escaneando Registros Civiles…")
+
+    def _on_viz_scan_progress(self, count: int):
+        self._viz_status.setText(f"⏳ Escaneando Registros Civiles… {count} registros")
+
+    def _on_viz_scan_finished(self):
+        self._viz_status.setText("")
 
     def _on_error(self, msg: str):
         self.statusBar().showMessage(f"Error: {msg}")

@@ -11,6 +11,7 @@ DEFAULTS: dict[str, Any] = {
     "output":       {"default_folder": str(Path.home() / "Documentos" / "MiRegistroDigital"),
                      "pdf_dpi": 200},
     "antecedentes": {"serial_inicial": 1, "serial_padding": 5},
+    "visualization": {"root_folder": ""},
     "ui":           {"last_page": "import"},
     "shortcuts":    {"fullscreen_bookmark": "Insert",
                      "fullscreen_autobookmark": "Up",
