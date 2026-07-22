@@ -6,14 +6,13 @@ import numpy as np
 from PySide6.QtWidgets import (
     QLabel, QFrame, QWidget, QScrollArea, QGridLayout,
     QVBoxLayout, QHBoxLayout, QSizePolicy, QPushButton,
-    QMenu, QToolBar, QRubberBand, QCheckBox, QApplication,
+    QMenu, QRubberBand, QCheckBox,
     QInputDialog, QDialog, QMessageBox, QProgressBar, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QLineEdit, QSpinBox, QStackedWidget, QDialogButtonBox,
+    QPlainTextEdit, QLineEdit, QSpinBox, QDialogButtonBox,
     QListView, QAbstractItemView, QStyledItemDelegate,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint, QMimeData, QEvent, QTimer, QModelIndex, QAbstractListModel
-from PySide6.QtGui import QPixmap, QAction, QKeySequence, QDrag, QPainter, QWheelEvent, QDesktopServices, QIntValidator, QPen, QColor, QFont
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, Signal, QSize, QRect, QPoint, QEvent, QTimer, QModelIndex, QAbstractListModel
+from PySide6.QtGui import QPixmap, QAction, QKeySequence, QPainter, QWheelEvent, QIntValidator, QPen, QColor, QFont
 
 from utils.image_utils import ndarray_to_qpixmap
 from models.config_model import ConfigModel

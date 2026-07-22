@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence
 
 from models.config_model import ConfigModel
-from views.theme import SURFACE, TEXT_DIM, SUCCESS
+from views.theme import SURFACE, SUCCESS
 
 
 class SettingsPage(QWidget):

@@ -4,7 +4,6 @@ import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 import numpy as np
 
 _BAD = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
