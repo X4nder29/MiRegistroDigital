@@ -41,6 +41,14 @@ class MatchPair:
         return self.registro is not None and self.antecedente is not None
 
     @property
+    def is_orphan_registro(self) -> bool:
+        return self.registro is not None and self.antecedente is None
+
+    @property
+    def is_orphan_antecedente(self) -> bool:
+        return self.antecedente is not None and self.registro is None
+
+    @property
     def status(self) -> str:
         if self.cancelado:
             return "cancelado"
@@ -87,7 +95,7 @@ class ScanResult:
             "total_registros": sum(1 for p in pairs if p.registro),
             "total_antecedentes": sum(1 for p in pairs if p.antecedente),
             "matched": sum(1 for p in pairs if p.is_matched),
-            "orphan_registro": sum(1 for p in pairs if p.status == "orphan_registro"),
-            "orphan_antecedente": sum(1 for p in pairs if p.status == "orphan_antecedente"),
+            "orphan_registro": sum(1 for p in pairs if p.is_orphan_registro),
+            "orphan_antecedente": sum(1 for p in pairs if p.is_orphan_antecedente),
             "cancelado": sum(1 for p in pairs if p.status == "cancelado"),
         }

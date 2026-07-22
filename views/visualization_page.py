@@ -3,18 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
     QScrollArea, QSplitter, QStackedWidget, QTreeWidget, QTreeWidgetItem,
-    QComboBox, QLineEdit, QGroupBox, QFormLayout, QListWidget, QListWidgetItem,
+    QComboBox, QLineEdit, QGroupBox, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QDialog, QProgressBar, QMenu,
 )
 
 from models.config_model import ConfigModel
 from models.visualization_model import Category, MatchPair, ScanResult, CategoryBatch
 from controllers.visualization_controller import VisualizationController
-from views.theme import SURFACE, SURFACE2, TEXT_DIM, TEXT_SEC, SUCCESS, WARNING, DANGER
+from views.theme import (
+    SURFACE, SURFACE2, BORDER, TEXT, TEXT_DIM, TEXT_SEC, SUCCESS, WARNING, DANGER,
+    pill_qss, COMPACT_LIST_QSS,
+)
 
 CATEGORY_LABELS: dict[Category, str] = {
     Category.DEFUNCION: "Defunción",
@@ -50,6 +53,8 @@ class VisualizationPage(QWidget):
         self._result: ScanResult | None = None
         self._last_root: str = ""
         self._sort_key: str = "serial"
+        self._status_font = QFont()
+        self._status_font.setBold(True)
 
         # Cola de inserción diferida para no bloquear la UI con árboles grandes.
         self._category_items: dict[Category, QTreeWidgetItem] = {}
@@ -231,26 +236,46 @@ class VisualizationPage(QWidget):
 
     def _make_summary_group(self) -> tuple[QGroupBox, dict[str, QLabel]]:
         box = QGroupBox("Resumen")
-        f = QFormLayout(box)
+        grid = QGridLayout(box)
+        grid.setSpacing(8)
         labels = {}
+        # (clave, etiqueta, color) — el color da a cada cifra su propio peso semántico
+        # en vez de una lista uniforme de números idénticos.
         rows = [
-            ("total_registros", "Registros totales:"),
-            ("total_antecedentes", "Antecedentes totales:"),
-            ("matched", "Emparejados:"),
-            ("orphan_registro", "Sin antecedente:"),
-            ("orphan_antecedente", "Sin registro:"),
-            ("cancelado", "Anulados:"),
-            ("duplicates", "Series duplicados:"),
+            ("total_registros", "Registros", TEXT_SEC),
+            ("total_antecedentes", "Antecedentes", TEXT_SEC),
+            ("matched", "Emparejados", SUCCESS),
+            ("orphan_registro", "Sin antecedente", WARNING),
+            ("orphan_antecedente", "Sin registro", WARNING),
+            ("cancelado", "Anulados", DANGER),
+            ("duplicates", "Series duplicados", WARNING),
         ]
-        for key, label in rows:
+        for i, (key, label, color) in enumerate(rows):
+            tile = QFrame()
+            tile.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {SURFACE2};
+                    border: 1px solid {BORDER};
+                    border-radius: 8px;
+                }}
+            """)
+            tv = QVBoxLayout(tile)
+            tv.setContentsMargins(10, 8, 10, 8)
+            tv.setSpacing(1)
             val = QLabel("0")
+            val.setStyleSheet(f"font-size:17pt; font-weight:700; color:{color}; border:none;")
+            tv.addWidget(val)
+            cap = QLabel(label)
+            cap.setStyleSheet(f"font-size:8pt; color:{TEXT_DIM}; border:none;")
+            tv.addWidget(cap)
             labels[key] = val
-            f.addRow(label, val)
+            grid.addWidget(tile, i // 2, i % 2)
         return box, labels
 
     def _make_by_category_group(self) -> tuple[QGroupBox, QVBoxLayout]:
         box = QGroupBox("Por categoría")
         lay = QVBoxLayout(box)
+        lay.setSpacing(8)
         return box, lay
 
     def _make_list_group(self, title: str) -> tuple[QGroupBox, QListWidget]:
@@ -258,6 +283,7 @@ class VisualizationPage(QWidget):
         lay = QVBoxLayout(box)
         lst = QListWidget()
         lst.setFixedHeight(140)
+        lst.setStyleSheet(COMPACT_LIST_QSS)
         lay.addWidget(lst)
         return box, lst
 
@@ -405,6 +431,7 @@ class VisualizationPage(QWidget):
         ant = f"{pair.antecedente.box} / {pair.antecedente.folder}" if pair.antecedente else "—"
         child = QTreeWidgetItem([pair.serial, label, reg, ant])
         child.setForeground(1, self._color(color))
+        child.setFont(1, self._status_font)
         child.setData(0, Qt.ItemDataRole.UserRole, pair)
         item.addChild(child)
 
@@ -487,34 +514,72 @@ class VisualizationPage(QWidget):
         if cat is None:
             for c in self._result.pairs.keys():
                 cc = self._result.counts(c)
-                lbl = QLabel(f"{CATEGORY_LABELS[c]}: {cc['matched']} emparejados, "
-                             f"{cc['orphan_registro']} sin antecedente, {cc['orphan_antecedente']} sin registro, "
-                             f"{cc['cancelado']} anulados")
-                lbl.setStyleSheet(f"color:{TEXT_SEC}; border:none; font-size:9pt;")
-                self._by_category_layout.addWidget(lbl)
+                self._by_category_layout.addWidget(self._build_category_row(c, cc))
 
         pairs = self._pairs_in_scope()
         self._orphan_registro_list.clear()
         for p in pairs:
-            if p.status == "orphan_registro":
+            if p.is_orphan_registro:
                 item = QListWidgetItem(f"{CATEGORY_LABELS[p.category]} / {p.serial} — {p.registro.box}, {p.registro.folder}")
                 item.setData(Qt.ItemDataRole.UserRole, p)
                 self._orphan_registro_list.addItem(item)
+        self._set_empty_placeholder(self._orphan_registro_list, "Sin huérfanos — todo emparejado")
 
         self._orphan_antecedente_list.clear()
         for p in pairs:
-            if p.status == "orphan_antecedente":
+            if p.is_orphan_antecedente:
                 item = QListWidgetItem(f"{CATEGORY_LABELS[p.category]} / {p.serial} — {p.antecedente.box}, {p.antecedente.folder}")
                 item.setData(Qt.ItemDataRole.UserRole, p)
                 self._orphan_antecedente_list.addItem(item)
+        self._set_empty_placeholder(self._orphan_antecedente_list, "Sin huérfanos — todo emparejado")
 
         self._duplicates_list.clear()
         for d in dup_in_scope:
             item = QListWidgetItem(f"{CATEGORY_LABELS[d.category]} / {d.subcategory.value} / {d.serial} ({len(d.paths)} archivos)")
             item.setData(Qt.ItemDataRole.UserRole, d)
             self._duplicates_list.addItem(item)
+        self._set_empty_placeholder(self._duplicates_list, "Sin series duplicados")
 
         self._bulk_btn.setEnabled(any(p.is_matched for p in pairs))
+
+    def _build_category_row(self, category: Category, counts: dict[str, int]) -> QFrame:
+        row = QFrame()
+        row.setStyleSheet(f"""
+            QFrame {{
+                background-color: {SURFACE2};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+            }}
+        """)
+        rl = QVBoxLayout(row)
+        rl.setContentsMargins(10, 8, 10, 8)
+        rl.setSpacing(6)
+
+        name = QLabel(CATEGORY_LABELS[category])
+        name.setStyleSheet(f"font-size:9pt; font-weight:600; color:{TEXT}; border:none;")
+        rl.addWidget(name)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for key, label, color in (
+            ("matched", "emparejados", SUCCESS),
+            ("orphan_registro", "sin antecedente", WARNING),
+            ("orphan_antecedente", "sin registro", WARNING),
+            ("cancelado", "anulados", DANGER),
+        ):
+            chip = QLabel(f"{counts[key]} {label}")
+            chip.setStyleSheet(pill_qss(color))
+            chips.addWidget(chip)
+        chips.addStretch()
+        rl.addLayout(chips)
+        return row
+
+    def _set_empty_placeholder(self, list_widget: QListWidget, text: str):
+        if list_widget.count() == 0:
+            item = QListWidgetItem(text)
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            item.setForeground(self._color(TEXT_DIM))
+            list_widget.addItem(item)
 
     # -------------------------------------------------------------- combine
     def _on_tree_context_menu(self, pos):
