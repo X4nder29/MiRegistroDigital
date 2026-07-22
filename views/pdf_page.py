@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, Signal, QPoint, QMimeData, QEvent
 from PySide6.QtGui import QPixmap, QImage, QColor, QDrag, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QScrollArea, QFrame, QFileDialog, QSizePolicy, QApplication,
+    QScrollArea, QFrame, QFileDialog,
     QGridLayout, QStackedWidget, QMessageBox, QSplitter,
     QListWidget, QListWidgetItem, QAbstractItemView, QMenu, QInputDialog,
 )
@@ -204,15 +204,16 @@ class OrganizeWidget(QWidget):
         left_layout.setSpacing(0)
 
         toolbar = QFrame()
-        toolbar.setFixedHeight(48)
-        toolbar.setStyleSheet(f"background:{SURFACE}; border-bottom:1px solid {BORDER};")
+        toolbar.setFixedHeight(44)
+        toolbar.setStyleSheet(f"background:{BG}; border:none;")
         tb = QHBoxLayout(toolbar)
-        tb.setContentsMargins(12, 6, 12, 6)
+        tb.setContentsMargins(16, 6, 16, 6)
 
         self._btn_load = QPushButton("Cargar PDFs")
         self._btn_load.clicked.connect(self._load_pdfs)
 
         self._btn_clear = QPushButton("Limpiar")
+        self._btn_clear.setProperty("danger", True)
         self._btn_clear.clicked.connect(self._clear_all)
 
         self._btn_generate = QPushButton("Generar PDF")
@@ -232,15 +233,7 @@ class OrganizeWidget(QWidget):
         left_layout.addWidget(toolbar)
 
         self._content_stack = QStackedWidget()
-
-        empty_label = QLabel(
-            "Carg\u00e1 uno o m\u00e1s PDFs para comenzar.\n"
-            "Pod\u00e9s reordenar las p\u00e1ginas arrastr\u00e1ndolas.\n"
-            "Cada PDF origen se muestra con un color distintivo."
-        )
-        empty_label.setAlignment(Qt.AlignCenter)
-        empty_label.setStyleSheet(f"color:{TEXT_DIM}; font-size:10pt;")
-        self._content_stack.addWidget(empty_label)
+        self._content_stack.addWidget(self._build_empty_state())
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -277,9 +270,10 @@ class OrganizeWidget(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        sidebar_header = QLabel("  Fuentes PDF")
+        sidebar_header = QLabel("Fuentes PDF")
+        sidebar_header.setContentsMargins(12, 0, 0, 0)
         sidebar_header.setFixedHeight(36)
-        sidebar_header.setStyleSheet(f"color:{TEXT_SEC}; font-size:9pt; border-bottom:1px solid {BORDER};")
+        sidebar_header.setStyleSheet(f"color:{TEXT_SEC}; font-size:9pt; font-weight:600; border-bottom:1px solid {BORDER};")
         right_layout.addWidget(sidebar_header)
 
         self._sidebar = _SidebarList()
@@ -300,12 +294,40 @@ class OrganizeWidget(QWidget):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(1)
         splitter.setChildrenCollapsible(False)
-        splitter.setStyleSheet(f"QSplitter::handle {{ background:{BORDER}; }}")
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         main.addWidget(splitter)
+
+    def _build_empty_state(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setAlignment(Qt.AlignCenter)
+        lay.setSpacing(14)
+
+        icon = QLabel("🗂️")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setStyleSheet("font-size:40pt; border:none;")
+        lay.addWidget(icon)
+
+        msg = QLabel(
+            "Cargá uno o más PDFs para comenzar.\n"
+            "Podés reordenar las páginas arrastrándolas — cada PDF origen\n"
+            "se muestra con un color distintivo."
+        )
+        msg.setAlignment(Qt.AlignCenter)
+        msg.setStyleSheet(f"color:{TEXT_SEC}; font-size:10pt; border:none;")
+        lay.addWidget(msg)
+
+        btn = QPushButton("Cargar PDFs")
+        btn.setProperty("primary", True)
+        btn.setFixedHeight(36)
+        btn.setFixedWidth(200)
+        btn.clicked.connect(self._load_pdfs)
+        lay.addWidget(btn, alignment=Qt.AlignCenter)
+
+        return w
 
     # ── Event filter ──────────────────────────────────────────────
 
@@ -529,6 +551,11 @@ class OrganizeWidget(QWidget):
             item = QListWidgetItem(pix, f"{src.label} ({src.page_count} p\u00e1gs.)")
             item.setData(Qt.UserRole, i)
             self._sidebar.addItem(item)
+        if not self._loaded_pdfs:
+            placeholder = QListWidgetItem("Sin PDFs cargados")
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            placeholder.setForeground(QColor(TEXT_DIM))
+            self._sidebar.addItem(placeholder)
 
     def _refresh(self):
         for i in range(self._grid.count() - 1, -1, -1):
@@ -709,6 +736,7 @@ class EditorPage(QWidget):
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setFixedHeight(32)
+            btn.setCursor(Qt.PointingHandCursor)
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background:transparent; border:none;
@@ -736,15 +764,8 @@ class EditorPage(QWidget):
         self._tool_stack.addWidget(self._organize_widget)
         self._organize_widget.pdf_generated.connect(self.pdf_generated)
 
-        placeholder_split = QLabel("Dividir PDF \u2014 pr\u00f3ximamente")
-        placeholder_split.setAlignment(Qt.AlignCenter)
-        placeholder_split.setStyleSheet(f"color:{TEXT_DIM}; font-size:11pt;")
-        self._tool_stack.addWidget(placeholder_split)
-
-        placeholder_merge = QLabel("Combinar PDFs \u2014 pr\u00f3ximamente")
-        placeholder_merge.setAlignment(Qt.AlignCenter)
-        placeholder_merge.setStyleSheet(f"color:{TEXT_DIM}; font-size:11pt;")
-        self._tool_stack.addWidget(placeholder_merge)
+        self._tool_stack.addWidget(self._build_stub("\u2702\ufe0f", "Dividir PDF", "Pr\u00f3ximamente"))
+        self._tool_stack.addWidget(self._build_stub("\ud83e\udde9", "Combinar PDFs", "Pr\u00f3ximamente \u2014 hoy pod\u00e9s arrastrar un PDF completo desde el panel Organizar."))
 
         layout.addWidget(self._tool_stack, 1)
 
@@ -756,3 +777,28 @@ class EditorPage(QWidget):
         for k, btn in self._tab_btns.items():
             btn.setChecked(k == key)
         self._tool_stack.setCurrentIndex(idx_map.get(key, 0))
+
+    def _build_stub(self, icon: str, title: str, subtitle: str) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setAlignment(Qt.AlignCenter)
+        lay.setSpacing(10)
+
+        icon_lbl = QLabel(icon)
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_lbl.setStyleSheet("font-size:32pt; border:none;")
+        lay.addWidget(icon_lbl)
+
+        title_lbl = QLabel(title)
+        title_lbl.setAlignment(Qt.AlignCenter)
+        title_lbl.setStyleSheet(f"color:{TEXT_SEC}; font-size:12pt; font-weight:600; border:none;")
+        lay.addWidget(title_lbl)
+
+        sub_lbl = QLabel(subtitle)
+        sub_lbl.setAlignment(Qt.AlignCenter)
+        sub_lbl.setWordWrap(True)
+        sub_lbl.setFixedWidth(360)
+        sub_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:9pt; border:none;")
+        lay.addWidget(sub_lbl)
+
+        return w
