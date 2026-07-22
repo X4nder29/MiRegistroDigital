@@ -1,4 +1,4 @@
-"""Ventana principal — sidebar minimal + stacked pages."""
+"""Ventana principal — pantalla de inicio + barra superior + stacked pages."""
 from __future__ import annotations
 import logging
 from pathlib import Path
@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QDialog, QProgressBar,
 )
 from PySide6.QtCore import Qt, Slot, Signal, QSize, QObject, QTimer, QRunnable, QThreadPool
-from PySide6.QtGui import QFont, QIcon, QKeySequence
+from PySide6.QtGui import QIcon, QKeySequence
 
 from models.scan_model import ScanModel
 from models.config_model import ConfigModel
@@ -31,6 +31,7 @@ from views.document_page import DocumentPage
 from views.pdf_page import EditorPage
 from views.settings_page import SettingsPage
 from views.visualization_page import VisualizationPage
+from views.home_page import HomePage
 from views.widgets import FullscreenViewer, ProcessListDialog
 from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2, INFO, WARNING
 
@@ -38,14 +39,18 @@ logger = logging.getLogger("docscan.main")
 
 
 _NAV = [
-    ("documentos",     "\U0001f4c4  Documentos"),
+    ("documentos",     "\U0001f4c4  Digitalizaci\u00f3n"),
     ("pdf",            "\U0001f4cb  Editor"),
     ("visualizacion",  "\U0001f441\ufe0f  Visualizaci\u00f3n"),
-    ("settings",       "\u2699\ufe0f  Ajustes"),
 ]
+
+_HOME_SIZE = (960, 680)
+_TOOL_MIN_SIZE = (1080, 700)
+_UNBOUNDED = 16777215  # QWIDGETSIZE_MAX
 
 
 class NavButton(QPushButton):
+    """Pesta\u00f1a de la barra superior \u2014 borde inferior de acento cuando est\u00e1 activa."""
     def __init__(self, label: str, icon: QIcon | None = None, parent=None):
         super().__init__(parent)
         self.setText(label)
@@ -53,22 +58,24 @@ class NavButton(QPushButton):
             self.setIcon(icon)
             self.setIconSize(QSize(16, 16))
         self.setCheckable(True)
-        self.setFixedHeight(38)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(40)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
         self.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 border: none;
-                border-left: 2px solid transparent;
+                border-bottom: 2px solid transparent;
                 border-radius: 0;
                 color: {TEXT_DIM};
-                text-align: left;
-                padding: 0 14px;
+                text-align: center;
+                padding: 0 16px;
                 font-size: 10pt;
             }}
             QPushButton:hover {{ background: transparent; color: {TEXT_SEC}; }}
             QPushButton:checked {{
-                border-left: 2px solid {ACCENT2};
+                border-bottom: 2px solid {ACCENT2};
                 color: {TEXT};
             }}
         """)
@@ -79,16 +86,17 @@ class _AutosaveWorker(QRunnable):
         done  = Signal()
         error = Signal(str)
 
-    def __init__(self, pages: list, path: Path):
+    def __init__(self, pages: list, path: Path, scan_settings: dict | None = None):
         super().__init__()
         self.pages = pages
         self.path  = path
+        self.scan_settings = scan_settings
         self.s     = self._S()
 
     def run(self):
         try:
             from models.project_model import save as save_project
-            save_project(self.path, self.pages)
+            save_project(self.path, self.pages, scan_settings=self.scan_settings)
             self.s.done.emit()
         except Exception as e:
             self.s.error.emit(str(e))
@@ -100,7 +108,6 @@ class MainWindow(QMainWindow):
         self._project_path: Path | None = None
         self._dirty = False
         self._update_title()
-        self.setMinimumSize(1080, 700)
         logger.info("MainWindow inicializando")
 
         self._cfg    = ConfigModel()
@@ -129,6 +136,8 @@ class MainWindow(QMainWindow):
         self._connect()
 
         # Unified permanent status bar
+        self.statusBar().setSizeGripEnabled(False)
+        self.statusBar().setAttribute(Qt.WA_StyledBackground, True)
         self._sb_page = QLabel("")
         self._sb_page.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
         self._sb_serial = QLabel("")
@@ -159,47 +168,67 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._build_menu_bar()
+        mb = self._build_menu_bar()
 
-        middle = QWidget()
-        mid_layout = QHBoxLayout(middle)
-        mid_layout.setContentsMargins(0, 0, 0, 0)
-        mid_layout.setSpacing(0)
-
-        mid_layout.addWidget(self._build_sidebar())
+        self._top_bar = self._build_top_bar(mb)
+        root.addWidget(self._top_bar)
 
         self._stack = QStackedWidget()
+        self._home_page  = HomePage()
         self._doc_page   = DocumentPage(config=self._cfg)
         self._pdf_page   = EditorPage(config=self._cfg)
         self._viz_page   = VisualizationPage(self._cfg, self._viz)
         self._sett_page  = SettingsPage(self._cfg)
 
-        for page in (self._doc_page, self._pdf_page, self._viz_page, self._sett_page):
+        for page in (self._home_page, self._doc_page, self._pdf_page, self._viz_page, self._sett_page):
             self._stack.addWidget(page)
 
-        mid_layout.addWidget(self._stack)
-        root.addWidget(middle, 1)
+        root.addWidget(self._stack, 1)
 
     def _build_menu_bar(self):
-        from PySide6.QtWidgets import QMenuBar
-        mb = QMenuBar(self)
-        mb.setStyleSheet(f"""
-            QMenuBar {{ background:{BG}; border:none; border-bottom:1px solid {BORDER};
-                        padding:0; font-size:9pt; color:{TEXT}; }}
-            QMenuBar::item {{ padding:4px 14px; }}
-            QMenuBar::item:selected {{ background:{SURFACE2}; }}
+        from PySide6.QtWidgets import QMenu
+        # Botón + QMenu en vez de QMenuBar: un QMenuBar se "acopla" solo como tira
+        # superior propia dentro de un QMainWindow incluso sin setMenuBar(), lo que
+        # impedía unificarlo en la misma fila que las pestañas/Ajustes.
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
             QMenu {{ background:{SURFACE}; border:1px solid {BORDER};
                      padding:4px; font-size:9pt; color:{TEXT}; }}
+            QMenu::item {{ padding:4px 14px; }}
             QMenu::item:selected {{ background:{SURFACE2}; }}
         """)
-        menu = mb.addMenu("&Archivo")
         menu.addAction("Abrir proyecto\u2026", self._open_project, QKeySequence.Open)
         menu.addAction("Guardar", self._save_project, QKeySequence.Save)
         menu.addAction("Guardar como\u2026", self._save_project_as, QKeySequence("Ctrl+Shift+S"))
         menu.addAction("Cerrar proyecto", self._close_project, QKeySequence("Ctrl+W"))
         menu.addSeparator()
+        self._close_tool_action = menu.addAction(
+            "Cerrar herramienta", lambda: self._navigate("home"))
+        menu.addSeparator()
         menu.addAction("Salir", self.close, QKeySequence("Ctrl+Q"))
-        self.setMenuBar(mb)
+        # Registrar las acciones en la ventana para que los atajos de teclado
+        # funcionen aunque el menú desplegable no esté abierto/visible.
+        self.addActions(menu.actions())
+
+        btn = QPushButton("Archivo")
+        btn.setFlat(True)
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedHeight(30)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: none;
+                border-radius: 4px;
+                color: {TEXT_SEC};
+                font-size: 9pt;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{ background: {SURFACE2}; color: {TEXT}; }}
+            QPushButton::menu-indicator {{ image: none; }}
+        """)
+        btn.setMenu(menu)
+        return btn
 
     def _open_process_dialog(self):
         if self._safe_process_dialog() is None:
@@ -243,7 +272,8 @@ class MainWindow(QMainWindow):
         self._autosave_pending = False
         autopath = get_autosave_path()
         autopath.parent.mkdir(parents=True, exist_ok=True)
-        worker = _AutosaveWorker(self._model.pages.copy(), autopath)
+        worker = _AutosaveWorker(self._model.pages.copy(), autopath,
+                                 self._doc_page.get_scan_settings().to_dict())
         worker.s.done.connect(self._on_autosave_done)
         worker.s.error.connect(self._on_autosave_error)
         self._autosave_worker = worker
@@ -312,6 +342,7 @@ class MainWindow(QMainWindow):
                     lbl.setText(f"Comprimiendo página {c} de {t}\u2026")
                     QApplication.processEvents()
                 save_project(self._project_path, self._model.pages,
+                             scan_settings=self._doc_page.get_scan_settings().to_dict(),
                              progress_callback=_on_progress)
                 self._dirty = False
                 self._update_title()
@@ -353,7 +384,9 @@ class MainWindow(QMainWindow):
                 bar.setValue(c)
                 lbl.setText(f"Comprimiendo página {c} de {t}\u2026")
                 QApplication.processEvents()
-            save_project(p, self._model.pages, progress_callback=_on_progress)
+            save_project(p, self._model.pages,
+                         scan_settings=self._doc_page.get_scan_settings().to_dict(),
+                         progress_callback=_on_progress)
             self._project_path = p
             self._dirty = False
             self._update_title()
@@ -395,7 +428,8 @@ class MainWindow(QMainWindow):
                 lbl.setText(f"Decodificando página {current} de {total}\u2026")
                 QApplication.processEvents()
 
-            pages = load_project(Path(path), progress_callback=_on_progress)
+            result = load_project(Path(path), progress_callback=_on_progress)
+            pages = result.pages
 
             self._model.load_pages(pages)
             self._project_path = Path(path)
@@ -414,6 +448,9 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
 
             self._doc_page.rebuild(pages, progress_callback=_on_rebuild)
+            if result.scan_settings:
+                from models.scan_settings import ScanSettings
+                self._doc_page.set_scan_settings(ScanSettings.from_dict(result.scan_settings))
         except Exception as e:
             dlg.close()
             QMessageBox.warning(self, "Error", f"No se pudo abrir el proyecto:\n{e}")
@@ -485,12 +522,16 @@ class MainWindow(QMainWindow):
             )
             if ret == QMessageBox.Yes:
                 try:
-                    pages = load_autosave()
-                    if pages:
-                        self._model.load_pages(pages)
+                    result = load_autosave()
+                    if result and result.pages:
+                        self._model.load_pages(result.pages)
                         self._dirty = True
                         self._update_title()
                         self._refresh_all_views()
+                        if result.scan_settings:
+                            from models.scan_settings import ScanSettings
+                            self._doc_page.set_scan_settings(
+                                ScanSettings.from_dict(result.scan_settings))
                         self.statusBar().showMessage(
                             "Proyecto recuperado del autoguardado")
                         return
@@ -502,40 +543,83 @@ class MainWindow(QMainWindow):
         pages = self._model.pages
         self._doc_page.rebuild(pages)
 
-    def _build_sidebar(self) -> QFrame:
-        sidebar = QFrame()
-        sidebar.setMinimumWidth(160)
-        sidebar.setMaximumWidth(220)
-        sidebar.setStyleSheet(f"background:{BG}; border-right: 1px solid {BORDER};")
-        v = QVBoxLayout(sidebar)
-        v.setContentsMargins(0, 16, 0, 12)
-        v.setSpacing(0)
+    def _build_top_bar(self, menu_bar) -> QFrame:
+        bar = QFrame()
+        bar.setFixedHeight(48)
+        bar.setStyleSheet(f"background:{BG}; border-bottom: 1px solid {BORDER};")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(16, 0, 16, 0)
+        h.setSpacing(4)
 
-        logo = QLabel("  MiRegistroDigital")
-        logo.setAlignment(Qt.AlignLeft)
-        logo.setFixedHeight(44)
-        logo.setStyleSheet(f"font-size:14pt; font-weight:700; color:{TEXT}; border:none; padding: 0 14px; letter-spacing: -0.3px;")
-        v.addWidget(logo)
-        v.addSpacing(16)
+        h.addWidget(menu_bar)
 
         self._nav_btns: dict[str, NavButton] = {}
         for key, label in _NAV:
             btn = NavButton(label)
             btn.clicked.connect(lambda checked, k=key: self._navigate(k))
             self._nav_btns[key] = btn
-            v.addWidget(btn)
+            h.addWidget(btn)
 
-        v.addStretch()
-        ver = QLabel("v1.0.0")
-        ver.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding: 0 4px;")
-        v.addWidget(ver)
-        return sidebar
+        h.addStretch()
+
+        settings_btn = QPushButton("⚙️  Ajustes")
+        settings_btn.setFixedHeight(30)
+        settings_btn.setCursor(Qt.PointingHandCursor)
+        settings_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {SURFACE2};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 0 14px;
+                font-size: 9pt;
+                color: {TEXT_SEC};
+            }}
+            QPushButton:hover {{ color: {TEXT}; border-color: {ACCENT2}; }}
+            QPushButton:checked {{ color: {TEXT}; border-color: {ACCENT2}; }}
+        """)
+        settings_btn.setCheckable(True)
+        settings_btn.setFocusPolicy(Qt.NoFocus)
+        settings_btn.clicked.connect(lambda: self._navigate("settings"))
+        self._settings_btn = settings_btn
+        h.addWidget(settings_btn)
+
+        return bar
 
     def _navigate(self, key: str):
-        idx = {"documentos": 0, "pdf": 1, "visualizacion": 2, "settings": 3}
+        idx = {"home": 0, "documentos": 1, "pdf": 2, "visualizacion": 3, "settings": 4}
         for k, btn in self._nav_btns.items():
             btn.setChecked(k == key)
+        self._settings_btn.setChecked(key == "settings")
         self._stack.setCurrentIndex(idx.get(key, 0))
+        self._top_bar.setVisible(key != "home")
+        self.statusBar().setVisible(key != "home")
+        self._close_tool_action.setEnabled(key != "home")
+
+        came_from_home = getattr(self, "_current_nav_key", None) == "home"
+        if key == "home":
+            # Pantalla principal: tamaño fijo, sin maximizar ni redimensionar.
+            if self.isMaximized():
+                self.showNormal()
+            # Alternar el flag explícitamente (en vez de solo min==max) fuerza a Qt a
+            # recomputar el estilo nativo de Windows y quitar el botón de maximizar.
+            self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
+            self.setFixedSize(*_HOME_SIZE)
+            self.show()
+        else:
+            # Pantallas de herramientas: redimensionables libremente.
+            self.setMinimumSize(*_TOOL_MIN_SIZE)
+            self.setMaximumSize(_UNBOUNDED, _UNBOUNDED)
+            if came_from_home:
+                # Igual que arriba: min==max en Home deja el botón de maximizar
+                # deshabilitado a nivel nativo; solo cambiar minimumSize/maximumSize
+                # después no se lo devuelve de forma fiable — hay que re-activar el
+                # flag explícitamente y volver a mostrar la ventana para que Windows
+                # recalcule el marco (borde de redimensión + botón maximizar).
+                self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+                self.show()
+                self.showMaximized()
+        self._current_nav_key = key
+
         self._cfg.set("ui", "last_page", key)
 
     def _connect(self):
@@ -545,7 +629,11 @@ class MainWindow(QMainWindow):
         # Import
         dp.import_images_requested.connect(self._on_import)
         dp.import_pdf_requested.connect(self._on_import)
-        dp.import_cancel_requested.connect(self._scan.cancel_import)
+
+        # Scan (TWAIN)
+        dp.scan_sources_refresh_requested.connect(self._on_refresh_scanners)
+        dp.scan_requested.connect(self._on_scan)
+        dp.scan_cancel_requested.connect(self._scan.cancel_scan)
 
         # Correction
         dp.correction_requested.connect(self._scan.auto_correct)
@@ -591,7 +679,13 @@ class MainWindow(QMainWindow):
             f"Importaci\u00f3n completa \u2014 {self._model.count} p\u00e1gina(s)"))
 
         self._scan.error.connect(self._on_error)
+        self._scan.error.connect(lambda msg: dp.set_scanning(False))
         self._scan.correction_done.connect(self._on_correction_done)
+
+        self._scan.scan_progress.connect(dp.set_scan_progress)
+        self._scan.scan_done.connect(self._flush_pending_pages)
+        self._scan.scan_done.connect(lambda: self.statusBar().showMessage(
+            f"Escaneo completo — {self._model.count} página(s)"))
 
         # OCR signals
         self._ocr.ocr_result.connect(self._on_ocr_result)
@@ -626,14 +720,16 @@ class MainWindow(QMainWindow):
         self._scan.bookmark_updated.connect(lambda *a: self._update_status_bar())
         self._scan.correction_done.connect(lambda *a: self._update_status_bar())
         self._scan.import_done.connect(lambda: self._update_status_bar())
+        self._scan.scan_done.connect(lambda: self._update_status_bar())
         self._scan.page_added.connect(lambda p: self._update_status_bar())
         self._scan.order_changed.connect(self._update_status_bar)
         self._ocr.ocr_result.connect(lambda *a: self._update_status_bar())
         self._doc_page.cut_toggled.connect(lambda i: self._update_status_bar())
         self._doc_page.page_deleted.connect(lambda i: self._update_status_bar())
 
-        self._navigate("documentos")
-        self._nav_btns["documentos"].setChecked(True)
+        self._home_page.tool_selected.connect(self._navigate)
+
+        self._navigate("home")
 
     def _update_status_bar(self):
         total = self._model.count
@@ -676,7 +772,6 @@ class MainWindow(QMainWindow):
             logger.warning("Import ya en curso, ignorando nueva solicitud")
             return
         logger.info("Importando %d archivos", len(paths))
-        self._doc_page.import_busy(True)
         self.statusBar().showMessage(f"Importando {len(paths)} archivo(s)\u2026")
 
         dlg = QDialog(self)
@@ -726,6 +821,25 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
+    def _on_refresh_scanners(self):
+        names = self._scan.list_scanner_sources()
+        self._doc_page.set_scanner_sources(names)
+        if not names:
+            self.statusBar().showMessage(
+                "No se encontraron escáneres TWAIN" if self._scan.is_twain_available()
+                else "pytwain no está disponible en este equipo")
+
+    @Slot(object)
+    def _on_scan(self, settings):
+        self._doc_page.set_scanning(True)
+        self.statusBar().showMessage("Escaneando…")
+        QApplication.processEvents()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._scan.start_scan(settings, int(self.winId()))
+        finally:
+            QApplication.restoreOverrideCursor()
+
     @Slot(object)
     def _on_page_queued(self, page):
         self._pending_pages.append(page)
@@ -733,7 +847,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _flush_pending_pages(self):
         dp = self._doc_page
-        dp.import_busy(False)
+        dp.set_scanning(False)
         dp.grid.blockSignals(True)
         dp._ocr_table.blockSignals(True)
         for page in self._pending_pages:

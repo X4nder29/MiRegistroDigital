@@ -12,6 +12,8 @@ DEFAULTS: dict[str, Any] = {
                      "pdf_dpi": 200},
     "antecedentes": {"serial_inicial": 1, "serial_padding": 5},
     "visualization": {"root_folder": ""},
+    "scanner":      {"device_name": "", "dpi": 300, "color_mode": "color",
+                     "duplex": True, "source": "adf"},
     "ui":           {"last_page": "import"},
     "shortcuts":    {"fullscreen_bookmark": "Insert",
                      "fullscreen_autobookmark": "Up",

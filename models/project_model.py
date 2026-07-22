@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 import zipfile
-import io
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable
@@ -15,15 +15,22 @@ _AUTOSAVE_NAME = "autosave.miregistro"
 _CURRENT_VERSION = 1
 
 
+@dataclass
+class ProjectData:
+    pages: list[PageData]
+    scan_settings: dict | None = None
+
+
 def get_autosave_path() -> Path:
     return _AUTOSAVE_DIR / _AUTOSAVE_NAME
 
 
-def save(path: Path, pages: list[PageData],
+def save(path: Path, pages: list[PageData], scan_settings: dict | None = None,
          progress_callback: Callable[[int, int], None] | None = None) -> None:
     metadata = {
         "version": _CURRENT_VERSION,
         "created": datetime.now().isoformat(),
+        "scan_settings": scan_settings,
         "pages": [],
     }
     total = len(pages)
@@ -55,7 +62,7 @@ def save(path: Path, pages: list[PageData],
         zf.writestr("metadata.json", json.dumps(metadata, indent=2, ensure_ascii=False))
 
 
-def load(path: Path, progress_callback: Optional[Callable[[int, int], None]] = None) -> list[PageData]:
+def load(path: Path, progress_callback: Optional[Callable[[int, int], None]] = None) -> ProjectData:
     with zipfile.ZipFile(path, "r") as zf:
         metadata = json.loads(zf.read("metadata.json"))
         pages = []
@@ -96,14 +103,14 @@ def load(path: Path, progress_callback: Optional[Callable[[int, int], None]] = N
             pages.append(page)
             if progress_callback:
                 progress_callback(i + 1, total)
-    return pages
+    return ProjectData(pages=pages, scan_settings=metadata.get("scan_settings"))
 
 
-def save_autosave(pages: list[PageData]) -> None:
-    save(get_autosave_path(), pages)
+def save_autosave(pages: list[PageData], scan_settings: dict | None = None) -> None:
+    save(get_autosave_path(), pages, scan_settings=scan_settings)
 
 
-def load_autosave() -> Optional[list[PageData]]:
+def load_autosave() -> Optional[ProjectData]:
     p = get_autosave_path()
     return load(p) if p.exists() else None
 

@@ -78,7 +78,7 @@ def main():
     logger.info("Tema aplicado")
 
     window = MainWindow()
-    window.showMaximized()
+    window.show()
     logger.info("Ventana principal mostrada")
     try:
         exit_code = app.exec()

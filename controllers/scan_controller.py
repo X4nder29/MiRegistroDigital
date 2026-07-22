@@ -3,13 +3,16 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
+import cv2
 import numpy as np
 from PySide6.QtCore import QObject, Signal, QRunnable, QThreadPool, Slot
 
 from models.scan_model import ScanModel
+from models.scan_settings import ScanSettings
 from models.config_model import ConfigModel
 from utils.image_utils import detect_corners, correct_perspective, deskew
 from utils.file_utils import IMAGE_EXTS, PDF_EXT
@@ -17,6 +20,13 @@ from utils.file_utils import IMAGE_EXTS, PDF_EXT
 logger = logging.getLogger("docscan.scan")
 
 _fitz_lock = threading.Lock()
+
+try:
+    import twain
+    _TWAIN_AVAILABLE = True
+except ImportError:
+    twain = None
+    _TWAIN_AVAILABLE = False
 
 
 class _ImportWorker(QRunnable):
@@ -195,6 +205,96 @@ class _ImportWorker(QRunnable):
             return 1
 
 
+class _TwainScan:
+    """Runs a TWAIN acquisition. Must be run synchronously on the Qt main thread —
+    pytwain's modal loop pumps the calling thread's raw Win32 message queue, which
+    only receives messages for windows owned by that same thread."""
+
+    class S(QObject):
+        page  = Signal(np.ndarray, str, int, str, list)  # image, source, src_page, comment, bookmarks
+        count = Signal(int)
+        done  = Signal()
+        error = Signal(str)
+
+    def __init__(self, settings: ScanSettings, parent_hwnd: int = 0):
+        self.s = _TwainScan.S()
+        self.settings = settings
+        self.parent_hwnd = parent_hwnd
+        self._stop = False
+
+    def cancel(self):
+        self._stop = True
+
+    def run(self):
+        if not _TWAIN_AVAILABLE:
+            self.s.error.emit("pytwain no está disponible en este equipo.")
+            return
+        try:
+            with twain.SourceManager(self.parent_hwnd or None) as sm:
+                src = sm.open_source(self.settings.device_name or None)
+                if src is None:
+                    self.s.error.emit("No se pudo abrir el escáner seleccionado.")
+                    return
+                with src:
+                    self._configure(src)
+                    count = 0
+
+                    def after(image, remaining):
+                        nonlocal count
+                        if self._stop:
+                            image.close()
+                            raise twain.exceptions.CancelAll
+                        fd, tmp_path = tempfile.mkstemp(".bmp")
+                        os.close(fd)
+                        try:
+                            image.save(tmp_path)
+                            arr = cv2.imread(tmp_path, cv2.IMREAD_COLOR)
+                        finally:
+                            image.close()
+                            try:
+                                os.remove(tmp_path)
+                            except OSError:
+                                pass
+                        if arr is not None:
+                            count += 1
+                            self.s.page.emit(arr, "scanner", -1, "", [])
+                            self.s.count.emit(count)
+
+                    src.acquire_natively(after=after, show_ui=False, modal=False)
+            self.s.done.emit()
+        except twain.exceptions.CancelAll:
+            self.s.done.emit()
+        except Exception as e:
+            logger.exception("Error durante el escaneo TWAIN")
+            self.s.error.emit(str(e))
+
+    def _configure(self, src):
+        dpi = float(self.settings.dpi)
+        src.set_capability(twain.ICAP_XRESOLUTION, twain.TWTY_FIX32, dpi)
+        src.set_capability(twain.ICAP_YRESOLUTION, twain.TWTY_FIX32, dpi)
+        pixel_type = {"color": twain.TWPT_RGB, "grayscale": twain.TWPT_GRAY,
+                     "bw": twain.TWPT_BW}.get(self.settings.color_mode, twain.TWPT_RGB)
+        try:
+            src.set_capability(twain.ICAP_PIXELTYPE, twain.TWTY_UINT16, pixel_type)
+        except Exception:
+            logger.warning("El escáner no admite cambiar el modo de color")
+        if self.settings.source == "adf":
+            try:
+                src.set_capability(twain.CAP_FEEDERENABLED, twain.TWTY_BOOL, True)
+                src.set_capability(twain.CAP_XFERCOUNT, twain.TWTY_INT16, -1)
+            except Exception:
+                logger.warning("El escáner no admite el alimentador automático (ADF)")
+            try:
+                src.set_capability(twain.CAP_DUPLEXENABLED, twain.TWTY_BOOL, self.settings.duplex)
+            except Exception:
+                logger.warning("El escáner no admite dúplex")
+        else:
+            try:
+                src.set_capability(twain.CAP_FEEDERENABLED, twain.TWTY_BOOL, False)
+            except Exception:
+                pass
+
+
 class ScanController(QObject):
     page_added      = Signal(object)
     import_done     = Signal()
@@ -203,6 +303,8 @@ class ScanController(QObject):
     correction_done = Signal(int)
     order_changed    = Signal()
     bookmark_updated = Signal(int, list)
+    scan_progress    = Signal(int)
+    scan_done        = Signal()
 
     def __init__(self, model: ScanModel, config: ConfigModel, parent=None):
         super().__init__(parent)
@@ -210,6 +312,7 @@ class ScanController(QObject):
         self._cfg  = config
         self._pool = QThreadPool.globalInstance()
         self._imp_w:  Optional[_ImportWorker] = None
+        self._scan_w: Optional[_TwainScan] = None
         logger.info("ScanController inicializado")
 
     @Slot(list)
@@ -228,6 +331,36 @@ class ScanController(QObject):
         logger.info("Importación cancelada")
         if self._imp_w:
             self._imp_w.cancel()
+
+    def is_twain_available(self) -> bool:
+        return _TWAIN_AVAILABLE
+
+    def list_scanner_sources(self) -> list[str]:
+        if not _TWAIN_AVAILABLE:
+            return []
+        try:
+            with twain.SourceManager() as sm:
+                return list(sm.source_list)
+        except Exception:
+            logger.exception("Error listando escáneres TWAIN")
+            return []
+
+    def start_scan(self, settings: ScanSettings, parent_hwnd: int = 0):
+        """Must be called on the Qt main thread — see _TwainScan docstring."""
+        logger.info("Iniciando escaneo TWAIN: %s", settings)
+        w = _TwainScan(settings, parent_hwnd)
+        w.s.page.connect(self._on_scan_page_src)
+        w.s.count.connect(self.scan_progress)
+        w.s.done.connect(self.scan_done)
+        w.s.error.connect(self.error)
+        self._scan_w = w
+        w.run()
+
+    @Slot()
+    def cancel_scan(self):
+        logger.info("Escaneo cancelado")
+        if self._scan_w:
+            self._scan_w.cancel()
 
     @Slot(int)
     def auto_correct(self, index: int):
@@ -290,10 +423,19 @@ class ScanController(QObject):
                      comment: str = "", bookmarks: list = []):
         self._process_and_add(image, src, src_page, comment, bookmarks)
 
+    @Slot(np.ndarray, str, int, str, list)
+    def _on_scan_page_src(self, image: np.ndarray, src: str, src_page: int,
+                          comment: str = "", bookmarks: list = []):
+        dpi = self._scan_w.settings.dpi if self._scan_w else 300
+        self._process_and_add(image, src, src_page, comment, bookmarks, dpi=dpi)
+
     def _process_and_add(self, image: np.ndarray, src: str, src_page: int = -1,
-                         comment: str = "", bookmarks: list | None = None):
+                         comment: str = "", bookmarks: list | None = None,
+                         dpi: int | None = None):
         bmarks = bookmarks or []
-        page = self._m.add_page(image, self._cfg.get("import", "pdf_dpi", 300), src, source_page=src_page,
+        if dpi is None:
+            dpi = self._cfg.get("import", "pdf_dpi", 300)
+        page = self._m.add_page(image, dpi, src, source_page=src_page,
                                 comment=comment, bookmarks=bmarks)
         logger.debug("Página añadida al modelo: index=%d, src=%s, comment=%s, bookmarks=%d",
                      page.index, src, comment[:30] if comment else "", len(bmarks))

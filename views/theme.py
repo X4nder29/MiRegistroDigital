@@ -21,6 +21,46 @@ INFO      = "#3b82f6"
 FONT_FAMILY = "'Segoe UI', 'Inter', -apple-system, sans-serif"
 
 
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def pill_qss(color: str) -> str:
+    """Estilo de insignia/pill: fondo tenue del color semántico, texto en ese color.
+    Usado para comunicar estado (OCR, coincidencias) de forma consistente en toda la app."""
+    return (
+        f"background-color: {_hex_to_rgba(color, 0.14)};"
+        f"color: {color};"
+        f"border: 1px solid {_hex_to_rgba(color, 0.3)};"
+        f"border-radius: 8px;"
+        f"padding: 1px 8px;"
+        f"font-size: 8pt;"
+        f"font-weight: 600;"
+    )
+
+
+COMPACT_LIST_QSS = f"""
+    QListWidget {{
+        background-color: {SURFACE2};
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        padding: 2px;
+        font-size: 8pt;
+    }}
+    QListWidget::item {{
+        padding: 3px 6px;
+        border-radius: 4px;
+    }}
+    QListWidget::item:selected {{
+        background-color: {SURFACE3};
+        color: {TEXT};
+    }}
+"""
+
+
 def apply_palette(app: QApplication):
     app.setFont(QFont(FONT_FAMILY, 10))
     p = QPalette()
@@ -82,6 +122,16 @@ QPushButton[primary="true"] {{
 QPushButton[primary="true"]:hover {{
     background-color: #2a2a2e;
     border-color: #3a3a3e;
+}}
+
+QPushButton[danger="true"] {{
+    color: {DANGER};
+    border-color: {DANGER};
+}}
+QPushButton[danger="true"]:hover {{
+    background-color: {_hex_to_rgba(DANGER, 0.12)};
+    border-color: {DANGER};
+    color: {DANGER};
 }}
 
 QLineEdit, QTextEdit, QPlainTextEdit {{
@@ -266,7 +316,11 @@ QStatusBar {{
     background: transparent;
     color: {TEXT_DIM};
     border: none;
+    border-top: 1px solid {BORDER};
     font-size: 8pt;
+}}
+QStatusBar::item {{
+    border: none;
 }}
 
 QToolTip {{

@@ -1,25 +1,25 @@
 """Página unificada — importar, corregir, OCR y exportar en una sola vista."""
 from __future__ import annotations
-import numpy as np
 from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QPushButton, QLabel, QFrame, QProgressBar, QFileDialog,
-    QSlider, QTabWidget, QGroupBox, QFormLayout, QSpinBox,
+    QSlider, QTabWidget, QGroupBox, QSpinBox,
     QCheckBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QMessageBox, QListWidget,
-    QListWidgetItem, QPlainTextEdit, QScrollArea,
+    QListWidgetItem, QPlainTextEdit, QScrollArea, QComboBox,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QEvent
-from PySide6.QtGui import QColor, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 
 from views.widgets import ThumbnailGrid, ImageViewer
 from models.config_model import ConfigModel
+from models.scan_settings import ScanSettings
 from views.theme import (
-    SURFACE, SURFACE2, SURFACE3, BORDER, BG,
+    SURFACE, BG,
     TEXT, TEXT_SEC, TEXT_DIM, SUCCESS, DANGER, WARNING, INFO,
-    ACCENT,
+    ACCENT2, pill_qss, COMPACT_LIST_QSS,
 )
 
 
@@ -27,7 +27,11 @@ class DocumentPage(QWidget):
     # ── Import ──
     import_images_requested = Signal(list)
     import_pdf_requested    = Signal(list)
-    import_cancel_requested = Signal()
+
+    # ── Scan (TWAIN) ──
+    scan_sources_refresh_requested = Signal()
+    scan_requested                 = Signal(object)   # ScanSettings
+    scan_cancel_requested          = Signal()
 
     # ── Correction ──
     correction_requested   = Signal(int)
@@ -73,6 +77,8 @@ class DocumentPage(QWidget):
         self._current_idx = -1
         self._rot_angle = 0.0
         self._building = False
+        self._status_font = QFont()
+        self._status_font.setBold(True)
         self._build()
 
     # ═══════════════════════════════════════════════════════════════
@@ -84,19 +90,13 @@ class DocumentPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_toolbar())
         self._apply_import_shortcut()
 
-        self._empty = QLabel(
-            "  Importa un PDF o imágenes para comenzar\n\n"
-            "  Usa los botones de la barra superior.")
-        self._empty.setAlignment(Qt.AlignCenter)
-        self._empty.setStyleSheet(f"color:{TEXT_DIM}; font-size:12pt; border:none; margin:80px;")
+        self._empty = self._build_empty_state()
         root.addWidget(self._empty)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(1)
-        splitter.setStyleSheet(f"QSplitter::handle {{ background: {SURFACE3}; }}")
 
         # ── Left: Thumbnail grid ──
         self.grid = ThumbnailGrid()
@@ -135,37 +135,44 @@ class DocumentPage(QWidget):
             seq = self._cfg.get("shortcuts", "import_pdf", seq)
         QShortcut(QKeySequence(seq), self, self._open_pdf)
 
-    # ── Toolbar ──
+    def _build_empty_state(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setAlignment(Qt.AlignCenter)
+        lay.setSpacing(14)
 
-    def _build_toolbar(self) -> QFrame:
-        bar = QFrame()
-        bar.setFixedHeight(56)
-        bar.setStyleSheet(f"background:{SURFACE}; border:none;")
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(20, 10, 20, 10)
-        lay.setSpacing(8)
+        icon = QLabel("📄")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setStyleSheet("font-size:40pt; border:none;")
+        lay.addWidget(icon)
 
-        btn_pdf = QPushButton("  PDF")
-        btn_pdf.setProperty("primary", True)
-        btn_pdf.setFixedHeight(34)
-        btn_pdf.setToolTip("Importar PDF multipágina")
-        btn_pdf.clicked.connect(self._open_pdf)
+        msg = QLabel("Importa un PDF, o escanea para comenzar")
+        msg.setAlignment(Qt.AlignCenter)
+        msg.setStyleSheet(f"color:{TEXT_SEC}; font-size:12pt; border:none;")
+        lay.addWidget(msg)
 
-        self._btn_cancel_import = QPushButton("Cancelar")
-        self._btn_cancel_import.setFixedHeight(30)
-        self._btn_cancel_import.setStyleSheet(f"color:{DANGER};")
-        self._btn_cancel_import.setVisible(False)
-        self._btn_cancel_import.clicked.connect(self.import_cancel_requested)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
 
-        lay.addWidget(btn_pdf)
-        lay.addWidget(self._btn_cancel_import)
-        lay.addStretch()
+        btn = QPushButton("📄  Importar")
+        btn.setProperty("primary", True)
+        btn.setFixedHeight(36)
+        btn.setFixedWidth(190)
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.clicked.connect(self._open_pdf)
+        btn_row.addWidget(btn)
 
-        self._page_count_lbl = QLabel("")
-        self._page_count_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:9pt; border:none;")
-        lay.addWidget(self._page_count_lbl)
+        self._btn_scan = QPushButton("🖨  Escanear")
+        self._btn_scan.setFixedHeight(36)
+        self._btn_scan.setFixedWidth(190)
+        self._btn_scan.setFocusPolicy(Qt.NoFocus)
+        self._btn_scan.setToolTip("Escanear con un dispositivo TWAIN (ver pestaña Escáner)")
+        self._btn_scan.clicked.connect(self._start_scan)
+        btn_row.addWidget(self._btn_scan)
 
-        return bar
+        lay.addLayout(btn_row)
+
+        return w
 
     # ── Right tabbed panel ──
 
@@ -185,7 +192,7 @@ class DocumentPage(QWidget):
                 padding: 8px 16px; font-size: 9pt;
             }}
             QTabBar::tab:selected {{
-                color: {TEXT}; border-bottom: 2px solid {ACCENT};
+                color: {TEXT}; border-bottom: 2px solid {ACCENT2};
             }}
             QTabBar::tab:hover {{
                 color: {TEXT_SEC};
@@ -194,6 +201,7 @@ class DocumentPage(QWidget):
 
         self._tabs.addTab(self._build_info_tab(), "   Info   ")
         self._tabs.addTab(self._build_correction_tab(), "   Corrección   ")
+        self._tabs.addTab(self._build_scanner_tab(), "   Escáner   ")
         self._tabs.addTab(self._build_ocr_tab(), "   OCR   ")
         self._tabs.addTab(self._build_export_tab(), "   Exportar   ")
 
@@ -212,19 +220,27 @@ class DocumentPage(QWidget):
         v.setContentsMargins(16, 12, 16, 12)
         v.setSpacing(10)
 
-        # Serial
+        # Serial — el dato más importante de la página: tamaño/peso propios,
+        # no una fila más de un QFormLayout genérico.
         serial_grp = QGroupBox("Serial OCR")
-        sl = QFormLayout(serial_grp)
+        sv = QVBoxLayout(serial_grp)
+        sv.setSpacing(8)
+
+        hero_row = QHBoxLayout()
+        hero_row.setSpacing(10)
         self._info_serial = QLabel("—")
-        self._info_serial.setStyleSheet(f"font-size:14pt; font-weight:bold; color:{TEXT}; border:none;")
+        self._info_serial.setStyleSheet(f"font-size:20pt; font-weight:700; color:{TEXT}; border:none;")
+        hero_row.addWidget(self._info_serial)
+        hero_row.addStretch()
         self._info_conf = QLabel("—")
-        self._info_conf.setStyleSheet(f"font-size:9pt; color:{TEXT_DIM}; border:none;")
-        sl.addRow("Número:", self._info_serial)
-        sl.addRow("Confianza:", self._info_conf)
+        self._info_conf.setStyleSheet(pill_qss(TEXT_DIM))
+        hero_row.addWidget(self._info_conf, 0, Qt.AlignVCenter)
+        sv.addLayout(hero_row)
+
         self._btn_override = QPushButton("Corregir serial…")
         self._btn_override.setFixedHeight(30)
         self._btn_override.clicked.connect(self._info_override_serial)
-        sl.addRow("", self._btn_override)
+        sv.addWidget(self._btn_override)
         v.addWidget(serial_grp)
 
         # Bookmarks
@@ -232,10 +248,7 @@ class DocumentPage(QWidget):
         bml = QVBoxLayout(bm_grp)
         self._bm_list = QListWidget()
         self._bm_list.setFixedHeight(80)
-        self._bm_list.setStyleSheet(
-            f"QListWidget {{ background:{SURFACE2}; border:1px solid {BORDER}; "
-            f"border-radius:4px; padding:2px; }}"
-            f"QListWidget::item {{ padding:3px 6px; font-size:8pt; }}")
+        self._bm_list.setStyleSheet(COMPACT_LIST_QSS)
         bml.addWidget(self._bm_list)
         bm_btns = QHBoxLayout()
         btn_bm_add = QPushButton("Añadir")
@@ -296,11 +309,18 @@ class DocumentPage(QWidget):
 
         rot_grp = QGroupBox("Rotación fina")
         rl = QVBoxLayout(rot_grp)
+        slider_row = QHBoxLayout()
         self._rot_slider = QSlider(Qt.Horizontal)
         self._rot_slider.setRange(-45, 45)
         self._rot_slider.setValue(0)
         self._rot_slider.valueChanged.connect(self._on_slider_rot)
-        rl.addWidget(self._rot_slider)
+        slider_row.addWidget(self._rot_slider, 1)
+        self._rot_angle_lbl = QLabel("0°")
+        self._rot_angle_lbl.setFixedWidth(36)
+        self._rot_angle_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._rot_angle_lbl.setStyleSheet(f"color:{TEXT}; font-size:9pt; font-weight:600; border:none;")
+        slider_row.addWidget(self._rot_angle_lbl)
+        rl.addLayout(slider_row)
 
         quick_row = QHBoxLayout()
         ang_btns = [(-90, "-90°"), (90, "90°"), (180, "180°")]
@@ -312,12 +332,14 @@ class DocumentPage(QWidget):
         rl.addLayout(quick_row)
         v.addWidget(rot_grp)
 
-        self._btn_auto = QPushButton("  Auto corrección (perspectiva + deskew)")
+        self._btn_auto = QPushButton("Auto corrección (perspectiva + deskew)")
+        self._btn_auto.setProperty("primary", True)
         self._btn_auto.setFixedHeight(34)
         self._btn_auto.clicked.connect(self._on_auto_correct)
         v.addWidget(self._btn_auto)
 
-        self._btn_reset = QPushButton("  Restablecer original")
+        self._btn_reset = QPushButton("Restablecer original")
+        self._btn_reset.setProperty("danger", True)
         self._btn_reset.setFixedHeight(34)
         self._btn_reset.clicked.connect(self._on_reset_correction)
         v.addWidget(self._btn_reset)
@@ -328,6 +350,109 @@ class DocumentPage(QWidget):
         vl.setContentsMargins(0, 0, 0, 0)
         vl.addWidget(scroll)
         return w
+
+    # ── Tab: Scanner (TWAIN) ──
+
+    def _build_scanner_tab(self) -> QWidget:
+        w = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;")
+        c = QWidget()
+        v = QVBoxLayout(c)
+        v.setContentsMargins(16, 12, 16, 12)
+        v.setSpacing(10)
+
+        cfg = self._cfg.section("scanner") if self._cfg else {}
+
+        grp = QGroupBox("Escáner")
+        gl = QVBoxLayout(grp)
+        gl.setSpacing(8)
+
+        # Device
+        dev_row = QHBoxLayout()
+        self._scan_device = QComboBox()
+        self._scan_device.setEditable(False)
+        dev_row.addWidget(self._scan_device, 1)
+        btn_refresh = QPushButton("🔄")
+        btn_refresh.setFixedWidth(32)
+        btn_refresh.setFixedHeight(28)
+        btn_refresh.setToolTip("Actualizar lista de escáneres")
+        btn_refresh.clicked.connect(self.scan_sources_refresh_requested)
+        dev_row.addWidget(btn_refresh)
+        gl.addWidget(QLabel("Dispositivo:"))
+        gl.addLayout(dev_row)
+
+        # DPI
+        dpi_row = QHBoxLayout()
+        dpi_row.addWidget(QLabel("Resolución (DPI):"))
+        self._scan_dpi = QSpinBox()
+        self._scan_dpi.setRange(100, 1200)
+        self._scan_dpi.setSingleStep(50)
+        self._scan_dpi.setValue(cfg.get("dpi", 300))
+        dpi_row.addWidget(self._scan_dpi)
+        dpi_row.addStretch()
+        gl.addLayout(dpi_row)
+
+        # Color mode
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Modo de color:"))
+        self._scan_color = QComboBox()
+        self._scan_color.addItem("Color", "color")
+        self._scan_color.addItem("Escala de grises", "grayscale")
+        self._scan_color.addItem("Blanco y negro", "bw")
+        idx = max(0, self._scan_color.findData(cfg.get("color_mode", "color")))
+        self._scan_color.setCurrentIndex(idx)
+        color_row.addWidget(self._scan_color, 1)
+        gl.addLayout(color_row)
+
+        # Source (ADF / Flatbed)
+        src_row = QHBoxLayout()
+        src_row.addWidget(QLabel("Origen:"))
+        self._scan_source = QComboBox()
+        self._scan_source.addItem("Alimentador automático (ADF)", "adf")
+        self._scan_source.addItem("Cristal (Flatbed)", "flatbed")
+        idx = max(0, self._scan_source.findData(cfg.get("source", "adf")))
+        self._scan_source.setCurrentIndex(idx)
+        self._scan_source.currentIndexChanged.connect(self._on_scan_source_changed)
+        src_row.addWidget(self._scan_source, 1)
+        gl.addLayout(src_row)
+
+        # Duplex
+        self._scan_duplex = QCheckBox("Escaneo dúplex (ambas caras)")
+        self._scan_duplex.setChecked(cfg.get("duplex", True))
+        gl.addWidget(self._scan_duplex)
+        self._on_scan_source_changed()
+
+        v.addWidget(grp)
+
+        self._btn_scan_tab = QPushButton("🖨  Escanear")
+        self._btn_scan_tab.setProperty("primary", True)
+        self._btn_scan_tab.setFixedHeight(34)
+        self._btn_scan_tab.clicked.connect(self._start_scan)
+        v.addWidget(self._btn_scan_tab)
+
+        self._btn_scan_cancel = QPushButton("Cancelar escaneo")
+        self._btn_scan_cancel.setProperty("danger", True)
+        self._btn_scan_cancel.setFixedHeight(30)
+        self._btn_scan_cancel.setVisible(False)
+        self._btn_scan_cancel.clicked.connect(self.scan_cancel_requested)
+        v.addWidget(self._btn_scan_cancel)
+
+        self._scan_status_lbl = QLabel("")
+        self._scan_status_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none;")
+        v.addWidget(self._scan_status_lbl)
+
+        v.addStretch()
+        scroll.setWidget(c)
+        vl = QVBoxLayout(w)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.addWidget(scroll)
+        return w
+
+    def _on_scan_source_changed(self):
+        is_adf = self._scan_source.currentData() == "adf"
+        self._scan_duplex.setEnabled(is_adf)
 
     # ── Tab: OCR ──
 
@@ -425,22 +550,23 @@ class DocumentPage(QWidget):
         cl = QVBoxLayout(civil_grp)
         cl.setSpacing(6)
 
-        self._btn_exp_civil = QPushButton("  ZIP — un PDF por página (serial)")
+        self._btn_exp_civil = QPushButton("ZIP — un PDF por página (serial)")
+        self._btn_exp_civil.setProperty("primary", True)
         self._btn_exp_civil.setFixedHeight(32)
         self._btn_exp_civil.clicked.connect(self._do_export_civil)
         cl.addWidget(self._btn_exp_civil)
 
-        self._btn_exp_civil_bm = QPushButton("  ZIP — un PDF por página (marcador)")
+        self._btn_exp_civil_bm = QPushButton("ZIP — un PDF por página (marcador)")
         self._btn_exp_civil_bm.setFixedHeight(32)
         self._btn_exp_civil_bm.clicked.connect(self._do_export_civil_bookmark)
         cl.addWidget(self._btn_exp_civil_bm)
 
-        self._btn_exp_orig = QPushButton("  PDF original (imágenes + comentarios)")
+        self._btn_exp_orig = QPushButton("PDF original (imágenes + comentarios)")
         self._btn_exp_orig.setFixedHeight(32)
         self._btn_exp_orig.clicked.connect(self._do_export_original)
         cl.addWidget(self._btn_exp_orig)
 
-        self._btn_exp_merge = QPushButton("  Unir PDFs externos…")
+        self._btn_exp_merge = QPushButton("Unir PDFs externos…")
         self._btn_exp_merge.setFixedHeight(32)
         self._btn_exp_merge.clicked.connect(self._switch_merge_tab)
         cl.addWidget(self._btn_exp_merge)
@@ -495,31 +621,30 @@ class DocumentPage(QWidget):
         # Groups list
         self._ant_groups = QListWidget()
         self._ant_groups.setFixedHeight(80)
-        self._ant_groups.setStyleSheet(
-            f"QListWidget {{ background:{SURFACE2}; border:1px solid {BORDER}; "
-            f"border-radius:4px; padding:2px; font-size:8pt; }}")
+        self._ant_groups.setStyleSheet(COMPACT_LIST_QSS)
         al.addWidget(self._ant_groups)
 
         self._ant_groups_lbl = QLabel("0 grupos")
         self._ant_groups_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none;")
         al.addWidget(self._ant_groups_lbl)
 
-        self._btn_exp_ant = QPushButton("  ZIP — un PDF por grupo (serial)")
+        self._btn_exp_ant = QPushButton("ZIP — un PDF por grupo (serial)")
+        self._btn_exp_ant.setProperty("primary", True)
         self._btn_exp_ant.setFixedHeight(30)
         self._btn_exp_ant.clicked.connect(self._do_export_ant)
         al.addWidget(self._btn_exp_ant)
 
-        self._btn_exp_ant_single = QPushButton("  PDF único con marcadores")
+        self._btn_exp_ant_single = QPushButton("PDF único con marcadores")
         self._btn_exp_ant_single.setFixedHeight(30)
         self._btn_exp_ant_single.clicked.connect(self._do_export_ant_single)
         al.addWidget(self._btn_exp_ant_single)
 
-        self._btn_exp_ant_split = QPushButton("  Varios PDFs por marcador")
+        self._btn_exp_ant_split = QPushButton("Varios PDFs por marcador")
         self._btn_exp_ant_split.setFixedHeight(30)
         self._btn_exp_ant_split.clicked.connect(self._do_export_ant_split)
         al.addWidget(self._btn_exp_ant_split)
 
-        self._btn_exp_ant_orig = QPushButton("  Exportar PDF original")
+        self._btn_exp_ant_orig = QPushButton("Exportar PDF original")
         self._btn_exp_ant_orig.setFixedHeight(30)
         self._btn_exp_ant_orig.clicked.connect(self._do_export_original)
         al.addWidget(self._btn_exp_ant_orig)
@@ -550,6 +675,7 @@ class DocumentPage(QWidget):
         if page is None:
             self._info_serial.setText("—")
             self._info_conf.setText("—")
+            self._info_conf.setStyleSheet(pill_qss(TEXT_DIM))
             self._info_comment.blockSignals(True)
             self._info_comment.setPlainText("")
             self._info_comment.blockSignals(False)
@@ -564,8 +690,8 @@ class DocumentPage(QWidget):
         conf = page.serial_confidence if page.serial else 0.0
         self._info_serial.setText(serial)
         conf_color = SUCCESS if conf >= 0.7 else WARNING if conf > 0 else TEXT_DIM
-        self._info_conf.setText(f"{conf:.0%}")
-        self._info_conf.setStyleSheet(f"font-size:9pt; color:{conf_color}; border:none;")
+        self._info_conf.setText(f"{conf:.0%}" if conf > 0 else "—")
+        self._info_conf.setStyleSheet(pill_qss(conf_color))
 
         # Bookmark
         self._refresh_bm_list(page)
@@ -691,6 +817,7 @@ class DocumentPage(QWidget):
 
     def _on_slider_rot(self, value: int):
         self._rot_angle = float(value)
+        self._rot_angle_lbl.setText(f"{value}°")
         if self._current_idx >= 0:
             self.rotation_changed.emit(self._current_idx, self._rot_angle)
 
@@ -728,7 +855,8 @@ class DocumentPage(QWidget):
         e = self._ocr_table.item(row, self.COL_STATUS)
         if e:
             e.setText("Corregido")
-            e.setForeground(QColor(TEXT_SEC))
+            e.setForeground(QColor(INFO))
+            e.setFont(self._status_font)
         self.serial_corrected.emit(idx, serial)
         self._refresh_ocr_summary()
 
@@ -862,6 +990,64 @@ class DocumentPage(QWidget):
             self.import_pdf_requested.emit([Path(p) for p in paths])
 
     # ═══════════════════════════════════════════════════════════════
+    #  INTERNAL: Scan helpers
+    # ═══════════════════════════════════════════════════════════════
+
+    def _start_scan(self):
+        settings = self.get_scan_settings()
+        if self._cfg:
+            for k, v in settings.to_dict().items():
+                self._cfg.set("scanner", k, v)
+        self.scan_requested.emit(settings)
+
+    def get_scan_settings(self) -> ScanSettings:
+        return ScanSettings(
+            device_name=self._scan_device.currentText() if self._scan_device.count() else "",
+            dpi=self._scan_dpi.value(),
+            color_mode=self._scan_color.currentData(),
+            duplex=self._scan_duplex.isChecked(),
+            source=self._scan_source.currentData(),
+        )
+
+    def set_scan_settings(self, s: ScanSettings):
+        if s.device_name:
+            i = self._scan_device.findText(s.device_name)
+            if i >= 0:
+                self._scan_device.setCurrentIndex(i)
+        self._scan_dpi.setValue(s.dpi)
+        i = self._scan_color.findData(s.color_mode)
+        if i >= 0:
+            self._scan_color.setCurrentIndex(i)
+        i = self._scan_source.findData(s.source)
+        if i >= 0:
+            self._scan_source.setCurrentIndex(i)
+        self._scan_duplex.setChecked(s.duplex)
+        self._on_scan_source_changed()
+
+    def set_scanner_sources(self, names: list[str]):
+        current = self._scan_device.currentText()
+        self._scan_device.clear()
+        self._scan_device.addItems(names)
+        if current and current in names:
+            self._scan_device.setCurrentText(current)
+        else:
+            for i, name in enumerate(names):
+                low = name.lower()
+                if "s2070" in low or "kodak" in low:
+                    self._scan_device.setCurrentIndex(i)
+                    break
+
+    def set_scanning(self, active: bool):
+        self._btn_scan.setEnabled(not active)
+        self._btn_scan_tab.setEnabled(not active)
+        self._btn_scan_cancel.setVisible(active)
+        if not active:
+            self._scan_status_lbl.setText("")
+
+    def set_scan_progress(self, count: int):
+        self._scan_status_lbl.setText(f"Escaneando… {count} página(s)")
+
+    # ═══════════════════════════════════════════════════════════════
     #  PUBLIC API (called by MainWindow)
     # ═══════════════════════════════════════════════════════════════
 
@@ -871,7 +1057,6 @@ class DocumentPage(QWidget):
         self.grid.add_page(index, image)
         self.viewer.set_image(image)
         self._current_idx = index
-        self._update_page_count()
         self._ocr_table.blockSignals(True)
         self._add_ocr_row(index, image)
         self._ocr_table.blockSignals(False)
@@ -892,6 +1077,8 @@ class DocumentPage(QWidget):
         e = QTableWidgetItem("Pendiente")
         e.setTextAlignment(Qt.AlignCenter)
         e.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        e.setForeground(QColor(TEXT_DIM))
+        e.setFont(self._status_font)
         bm = QTableWidgetItem("")
         bm.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         cm = QTableWidgetItem("")
@@ -914,7 +1101,6 @@ class DocumentPage(QWidget):
                 item.setData(Qt.UserRole, r)
                 item.setText(str(r + 1))
         self._refresh_ocr_summary()
-        self._update_page_count()
         if self.grid.count == 0:
             self._empty.setVisible(True)
             self._splitter.setVisible(False)
@@ -948,6 +1134,7 @@ class DocumentPage(QWidget):
             self._ocr_table.item(row, self.COL_SERIAL).setText(serial or "Sin serial")
             self._ocr_table.item(row, self.COL_CONF).setText(f"{conf:.0%}" if conf > 0 else "—")
             e = self._ocr_table.item(row, self.COL_STATUS)
+            e.setFont(self._status_font)
             if serial:
                 c = SUCCESS if conf >= 0.7 else WARNING
                 e.setText("OK" if conf >= 0.7 else "Baja confianza")
@@ -1013,7 +1200,6 @@ class DocumentPage(QWidget):
                 progress_callback(i + 1, total)
         self._ocr_table.blockSignals(False)
         self._refresh_ocr_summary()
-        self._update_page_count()
         if pages_data:
             self._empty.setVisible(False)
             self._splitter.setVisible(True)
@@ -1033,6 +1219,7 @@ class DocumentPage(QWidget):
         self._ocr_table.item(row, self.COL_SERIAL).setText(serial or "Sin serial")
         self._ocr_table.item(row, self.COL_CONF).setText(f"{conf:.0%}" if conf > 0 else "—")
         e = self._ocr_table.item(row, self.COL_STATUS)
+        e.setFont(self._status_font)
         if serial:
             c = SUCCESS if conf >= 0.7 else WARNING
             e.setText("OK" if conf >= 0.7 else "Baja confianza")
@@ -1053,9 +1240,6 @@ class DocumentPage(QWidget):
 
     def ocr_finished(self):
         self._ocr_prog.setVisible(False)
-
-    def import_busy(self, busy: bool):
-        self._btn_cancel_import.setVisible(busy)
 
     def update_groups(self, groups: list[list[int]]):
         self._ant_groups.clear()
@@ -1087,8 +1271,6 @@ class DocumentPage(QWidget):
         self._ant_chk_range.setChecked(False)
         self._ant_desde.setValue(1)
         self._ant_hasta.setValue(100)
-        self._btn_cancel_import.setVisible(False)
-        self._update_page_count()
         self._refresh_ocr_summary()
         self._refresh_info_tab()
 
@@ -1199,10 +1381,6 @@ class DocumentPage(QWidget):
             if item and item.data(Qt.UserRole) == page_index:
                 return r
         return -1
-
-    def _update_page_count(self):
-        n = self.grid.count
-        self._page_count_lbl.setText(f"{n} página(s)" if n else "")
 
     def _set_export_buttons(self, enabled: bool, text: str | None = None):
         btns = [
