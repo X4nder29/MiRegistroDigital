@@ -15,9 +15,9 @@ DEFAULTS: dict[str, Any] = {
     "scanner":      {"device_name": "", "dpi": 300, "color_mode": "color",
                      "duplex": True, "source": "adf"},
     "ui":           {"last_page": "import"},
-    "shortcuts":    {"fullscreen_bookmark": "Insert",
-                     "fullscreen_autobookmark": "Up",
-                     "import_pdf": "Ctrl+P"},
+    "shortcuts":    {"import_pdf": "Ctrl+P",
+                     "scan": "Ctrl+K",
+                     "bookmark": "Ctrl+B"},
 }
 CONFIG_PATH = Path.home() / ".miregistrodigital" / "config.json"
 

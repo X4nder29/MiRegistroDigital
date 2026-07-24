@@ -135,15 +135,12 @@ class SettingsPage(QWidget):
     def _shortcuts_group(self) -> QGroupBox:
         box = QGroupBox("Atajos de teclado")
         f = QFormLayout(box)
-        self._shortcut_bookmark = QKeySequenceEdit()
-        self._shortcut_bookmark.setFixedWidth(220)
-        f.addRow("Agregar marcador (vista completa):", self._shortcut_bookmark)
-        self._shortcut_autobookmark = QKeySequenceEdit()
-        self._shortcut_autobookmark.setFixedWidth(220)
-        f.addRow("Auto-marcador +1 (vista completa):", self._shortcut_autobookmark)
         self._shortcut_import_pdf = QKeySequenceEdit()
         self._shortcut_import_pdf.setFixedWidth(220)
         f.addRow("Importar PDF:", self._shortcut_import_pdf)
+        self._shortcut_scan = QKeySequenceEdit()
+        self._shortcut_scan.setFixedWidth(220)
+        f.addRow("Escanear:", self._shortcut_scan)
         return box
 
     def _load(self):
@@ -160,9 +157,8 @@ class SettingsPage(QWidget):
         self._serial_ini.setValue(c.get("antecedentes", "serial_inicial", 1))
         self._padding.setValue(c.get("antecedentes", "serial_padding", 5))
         self._viz_root.setText(c.get("visualization", "root_folder", ""))
-        self._shortcut_bookmark.setKeySequence(QKeySequence(c.get("shortcuts", "fullscreen_bookmark", "Insert")))
-        self._shortcut_autobookmark.setKeySequence(QKeySequence(c.get("shortcuts", "fullscreen_autobookmark", "Up")))
         self._shortcut_import_pdf.setKeySequence(QKeySequence(c.get("shortcuts", "import_pdf", "Ctrl+P")))
+        self._shortcut_scan.setKeySequence(QKeySequence(c.get("shortcuts", "scan", "Ctrl+K")))
 
     def _save(self):
         c = self._cfg
@@ -178,9 +174,8 @@ class SettingsPage(QWidget):
         c.set("antecedentes", "serial_inicial",        self._serial_ini.value())
         c.set("antecedentes", "serial_padding",        self._padding.value())
         c.set("visualization", "root_folder",          self._viz_root.text().strip())
-        c.set("shortcuts",    "fullscreen_bookmark",   self._shortcut_bookmark.keySequence().toString())
-        c.set("shortcuts",    "fullscreen_autobookmark", self._shortcut_autobookmark.keySequence().toString())
         c.set("shortcuts",    "import_pdf",              self._shortcut_import_pdf.keySequence().toString())
+        c.set("shortcuts",    "scan",                    self._shortcut_scan.keySequence().toString())
         c.save()
         self._banner.setVisible(True)
         from PySide6.QtCore import QTimer
