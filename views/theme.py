@@ -6,14 +6,25 @@ from PySide6.QtGui import QColor, QPalette, QFont
 from PySide6.QtWidgets import QApplication
 
 
-BG        = "#0a0a0b"
-SURFACE   = "#111113"
-SURFACE2  = "#18181b"
-SURFACE3  = "#202023"
-BORDER    = "#27272a"
-TEXT      = "#ededef"
-TEXT_SEC  = "#a1a1aa"
-TEXT_DIM  = "#71717a"
+# Contraste calibrado contra referencias de UI oscura reales (GitHub/Vercel/
+# Linear). Para texto se usa la razón WCAG; para superficies contiguas se usa
+# el delta de luminosidad perceptual L*, porque cerca del negro la razón WCAG
+# se comprime hacia 1 y deja de describir lo que el ojo ve.
+BG        = "#0a0a0b"   # lienzo (ancla, sin cambios)
+SURFACE   = "#131316"   # islas/tarjetas   — dL* 3.2 sobre el lienzo
+SURFACE2  = "#1b1b1f"   # controles/inset  — relleno de inputs y botones
+SURFACE3  = "#26262c"   # hover/selección  — dL* 5.5 sobre SURFACE2
+BORDER    = "#303038"   # divisores        — dL* 17.4 (nivel GitHub dark)
+BORDER_STRONG = "#3a3a43"  # límite de control (input/botón) — dL* 22 (Vercel)
+TEXT      = "#f2f2f4"   # 17.7:1 sobre el lienzo
+TEXT_SEC  = "#adadb8"   # 9.3:1  — etiquetas
+TEXT_DIM  = "#8f8f9a"   # 6.2:1  — metadatos (antes 4.1:1, bajo mínimo AA)
+DISABLED  = "#5f5f6b"   # inactivo: perceptible pero claramente apagado
+# Superficies flotantes (menús y desplegables). Un popup se dibuja ENCIMA de
+# otra superficie, así que necesita su propio nivel: con SURFACE quedaba a
+# dL* 0.0 de una isla SURFACE, es decir, se fundía con el fondo de detrás.
+POPUP     = "#212127"   # dL* +7.0 sobre una isla, +10.2 sobre el lienzo
+POPUP_SEL = "#33333d"   # fila resaltada: dL* +8.7 sobre el propio popup
 ACCENT    = "#e8e8ee"
 ACCENT2   = "#8888ff"
 SUCCESS   = "#22c55e"
@@ -97,7 +108,7 @@ QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
 }}
 QSpinBox::up-button:pressed, QSpinBox::down-button:pressed,
 QDoubleSpinBox::up-button:pressed, QDoubleSpinBox::down-button:pressed {{
-    background: #2a2a2e;
+    background: #2f2f36;
 }}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
     image: {_chevron_url("chevron_up.svg")};
@@ -173,35 +184,65 @@ QLabel {{
     background: transparent;
 }}
 
+/* Un botón debe leerse como un objeto, no como una etiqueta flotante: lleva
+   relleno propio además del borde. Antes era transparente con un borde de
+   1.3:1, prácticamente invisible sobre el lienzo. */
 QPushButton {{
-    background-color: transparent;
-    color: {TEXT_SEC};
-    border: 1px solid {BORDER};
+    background-color: {SURFACE2};
+    color: {TEXT};
+    border: 1px solid {BORDER_STRONG};
     border-radius: 6px;
-    padding: 6px 16px;
-    min-height: 28px;
+    /* min-height + padding fijan un mínimo de 32 px (20+10+2). Antes daba 42 px
+       y, como el min-height de la hoja de estilo gana sobre setFixedHeight(),
+       ningún botón respetaba su altura explícita: los de 32/34 px se dibujaban
+       a 42 y se salían de las barras de 44 px. */
+    padding: 5px 16px;
+    min-height: 20px;
 }}
 QPushButton:hover {{
-    background-color: {SURFACE};
-    border-color: {SURFACE3};
+    background-color: {SURFACE3};
+    border-color: #4a4a55;
     color: {TEXT};
 }}
 QPushButton:pressed {{
-    background-color: {SURFACE2};
+    background-color: #2f2f36;
 }}
 QPushButton:disabled {{
-    color: {TEXT_DIM};
-    border-color: transparent;
+    background-color: {SURFACE};
+    color: {DISABLED};
+    border-color: {BORDER};
 }}
 
+/* La acción primaria gana por inversión de valor, no por un gris un punto más
+   claro: relleno claro sobre lienzo oscuro, 16:1. Es el único elemento de la
+   pantalla que invierte, así que no compite con nada. */
 QPushButton[primary="true"] {{
-    background-color: {SURFACE3};
-    color: {TEXT};
-    border: 1px solid {BORDER};
+    background-color: {ACCENT};
+    color: {BG};
+    border: 1px solid {ACCENT};
+    font-weight: 600;
 }}
 QPushButton[primary="true"]:hover {{
-    background-color: #2a2a2e;
-    border-color: #3a3a3e;
+    background-color: #ffffff;
+    border-color: #ffffff;
+}}
+QPushButton[primary="true"]:pressed {{
+    background-color: #d4d4dc;
+    border-color: #d4d4dc;
+}}
+QPushButton[primary="true"]:disabled {{
+    background-color: {SURFACE3};
+    color: {DISABLED};
+    border-color: {BORDER};
+}}
+
+/* Acciones apiladas a ancho completo en los paneles laterales. Centrar
+   etiquetas de largo dispar crea un arranque irregular y obliga al ojo a
+   volver a buscar el inicio de cada texto; alineadas a la izquierda la
+   columna se lee de un vistazo, como un menú. */
+QPushButton[align="left"] {{
+    text-align: left;
+    padding-left: 12px;
 }}
 
 QPushButton[danger="true"] {{
@@ -217,10 +258,14 @@ QPushButton[danger="true"]:hover {{
 QLineEdit, QTextEdit, QPlainTextEdit {{
     background-color: {SURFACE2};
     color: {TEXT};
-    border: 1px solid {BORDER};
+    border: 1px solid {BORDER_STRONG};
     border-radius: 6px;
     padding: 6px 10px;
     selection-background-color: {SURFACE3};
+}}
+QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {{
+    color: {DISABLED};
+    border-color: {BORDER};
 }}
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
     border-color: {INFO};
@@ -229,11 +274,15 @@ QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
 QSpinBox, QDoubleSpinBox, QComboBox {{
     background-color: {SURFACE2};
     color: {TEXT};
-    border: 1px solid {BORDER};
+    border: 1px solid {BORDER_STRONG};
     border-radius: 6px;
     padding: 4px 8px;
     min-height: 26px;
     selection-background-color: {SURFACE3};
+}}
+QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
+    color: {DISABLED};
+    border-color: {BORDER};
 }}
 /* Sin padding-right: Qt ya descuenta el ancho de los botones del área de
    texto. Añadirlo aquí lo restaría dos veces y recortaría el número. */
@@ -245,19 +294,27 @@ QComboBox::drop-down {{
     width: 22px;
 }}
 QComboBox QAbstractItemView {{
-    background-color: {SURFACE};
-    border: 1px solid {BORDER};
+    background-color: {POPUP};
+    border: 1px solid {BORDER_STRONG};
     border-radius: 6px;
-    selection-background-color: {SURFACE3};
+    selection-background-color: {POPUP_SEL};
     color: {TEXT};
     padding: 4px;
+    outline: none;              /* sin recuadro punteado de foco */
 }}
 QComboBox QAbstractItemView::item {{
-    padding: 5px 10px;
+    padding: 6px 10px;
     border-radius: 4px;
+    min-height: 22px;
+    color: {TEXT_SEC};
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {SURFACE3};
+    color: {TEXT};
 }}
 QComboBox QAbstractItemView::item:selected {{
-    background-color: {SURFACE3};
+    background-color: {POPUP_SEL};
+    color: {TEXT};
 }}
 
 QScrollBar:vertical {{
@@ -266,15 +323,15 @@ QScrollBar:vertical {{
     margin: 2px 0;
 }}
 QScrollBar::handle:vertical {{
-    background: {BORDER};
+    background: {BORDER_STRONG};
     border-radius: 4px;
     min-height: 30px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: #3f3f46;
+    background: #55555f;
 }}
 QScrollBar::handle:vertical:pressed {{
-    background: #52525b;
+    background: #6b6b76;
 }}
 QScrollBar:horizontal {{
     background: transparent;
@@ -282,15 +339,15 @@ QScrollBar:horizontal {{
     margin: 0 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {BORDER};
+    background: {BORDER_STRONG};
     border-radius: 4px;
     min-width: 30px;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: #3f3f46;
+    background: #55555f;
 }}
 QScrollBar::handle:horizontal:pressed {{
-    background: #52525b;
+    background: #6b6b76;
 }}
 QScrollBar::add-line, QScrollBar::sub-line {{
     background: none;
@@ -362,11 +419,14 @@ QCheckBox::indicator {{
     width: 16px;
     height: 16px;
     border-radius: 4px;
-    border: 1px solid {BORDER};
+    border: 1px solid {BORDER_STRONG};
     background: {SURFACE2};
 }}
 QCheckBox::indicator:hover {{
-    border-color: {SURFACE3};
+    border-color: #55555f;
+}}
+QCheckBox:disabled {{
+    color: {DISABLED};
 }}
 QCheckBox::indicator:checked {{
     background: {ACCENT2};
@@ -411,10 +471,12 @@ QStatusBar::item {{
     border: none;
 }}
 
+/* Mismo nivel flotante que menús y desplegables: un tooltip también se dibuja
+   encima de otra superficie y necesita despegarse de ella. */
 QToolTip {{
-    background: {SURFACE2};
+    background: {POPUP};
     color: {TEXT};
-    border: 1px solid {BORDER};
+    border: 1px solid {BORDER_STRONG};
     padding: 6px 10px;
     border-radius: 4px;
 }}
@@ -424,21 +486,25 @@ QMessageBox {{
 }}
 
 QMenu {{
-    background-color: {SURFACE};
-    border: 1px solid {BORDER};
+    background-color: {POPUP};
+    border: 1px solid {BORDER_STRONG};
     border-radius: 6px;
     padding: 4px;
+    color: {TEXT_SEC};
 }}
 QMenu::item {{
     padding: 6px 20px;
     border-radius: 4px;
 }}
 QMenu::item:selected {{
-    background-color: {SURFACE3};
+    background-color: {POPUP_SEL};
     color: {TEXT};
 }}
+QMenu::item:disabled {{
+    color: {DISABLED};
+}}
 QMenu::separator {{
-    background: {BORDER};
+    background: {BORDER_STRONG};
     height: 1px;
     margin: 4px 8px;
 }}
