@@ -16,10 +16,6 @@ def sanitize(name: str) -> str:
     return _BAD.sub("_", name).strip(". ") or "archivo"
 
 
-def serial_str(n: int, padding: int = 5) -> str:
-    return str(n).zfill(padding)
-
-
 def ts_name(prefix: str, ext: str = ".zip") -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
 

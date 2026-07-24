@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, Signal, QRunnable, QThreadPool, Slot
 from models.scan_model import ScanModel, PageData
 from models.job_model import Job, JobType, JobStatus
 from models.config_model import ConfigModel
-from utils.file_utils import (sanitize, serial_str, ts_name, unique, build_zip)
+from utils.file_utils import (sanitize, ts_name, unique, build_zip)
 
 logger = logging.getLogger("docscan.export")
 
@@ -44,41 +44,6 @@ class _CivilWorker(QRunnable):
                 else:
                     used[base] = 0
                 entries[base + ".pdf"] = _build_pdf_bytes([page], self.dpi)
-            build_zip(entries, self.zip_path)
-            self.s.done.emit(self.job.id, str(self.zip_path))
-        except Exception as e:
-            self.s.error.emit(self.job.id, str(e))
-
-
-class _AntWorker(QRunnable):
-    class S(QObject):
-        progress  = Signal(str, int, int)
-        done      = Signal(str, str)
-        error     = Signal(str, str)
-        cancelled = Signal(str)
-
-    def __init__(self, job: Job, groups: list[list[PageData]],
-                 zip_path: Path, dpi: int, serial_ini: int, padding: int):
-        super().__init__()
-        self.s = _AntWorker.S()
-        self.job = job
-        self.groups, self.zip_path = groups, zip_path
-        self.dpi, self.serial_ini, self.padding = dpi, serial_ini, padding
-        self._cancel = False
-
-    def cancel(self):
-        self._cancel = True
-
-    def run(self):
-        try:
-            entries: dict[str, bytes] = {}
-            for i, group in enumerate(self.groups):
-                if self._cancel:
-                    self.s.cancelled.emit(self.job.id)
-                    return
-                self.s.progress.emit(self.job.id, i + 1, len(self.groups))
-                name = serial_str(self.serial_ini + i, self.padding) + ".pdf"
-                entries[name] = _build_pdf_bytes(group, self.dpi)
             build_zip(entries, self.zip_path)
             self.s.done.emit(self.job.id, str(self.zip_path))
         except Exception as e:
@@ -206,36 +171,6 @@ class ExportController(QObject):
         self._pool.start(w)
         return job.id
 
-    def export_ant(self, folder: str, serial_ini: int, padding: int,
-                   desde: int = 0, hasta: int = 0, label: str = "") -> str:
-        """Lanza exportación de antecedentes. Retorna job_id."""
-        pages = self._m.pages
-        if hasta > 0:
-            pages = [p for p in pages if desde <= p.index + 1 <= hasta]
-        elif desde > 1:
-            pages = [p for p in pages if p.index + 1 >= desde]
-
-        groups = self._build_groups(list(pages))
-        if not groups:
-            return ""
-
-        job = Job(job_type=JobType.ANTECEDENTES,
-                  label=label or f"Antecedentes #{len(self._jobs) + 1}",
-                  total=len(groups))
-        self._jobs[job.id] = job
-        self.job_created.emit(job)
-
-        zip_path = unique(Path(folder) / ts_name("antecedentes"))
-        dpi = self._cfg.get("output", "pdf_dpi", 200)
-        w = _AntWorker(job, groups, zip_path, dpi, serial_ini, padding)
-        w.s.progress.connect(self._on_progress)
-        w.s.done.connect(self._on_done)
-        w.s.error.connect(self._on_error)
-        w.s.cancelled.connect(self._on_cancelled)
-        self._workers[job.id] = w
-        self._pool.start(w)
-        return job.id
-
     def export_civil_bookmark(self, folder: str, label: str = "") -> str:
         """Un PDF por página, filename = bookmark. Retorna job_id."""
         pages = list(self._m.pages)
@@ -258,7 +193,7 @@ class ExportController(QObject):
         self._pool.start(w)
         return job.id
 
-    def export_ant_single_pdf(self, folder: str, serial_ini: int, padding: int,
+    def export_ant_single_pdf(self, folder: str,
                                desde: int = 0, hasta: int = 0, label: str = "",
                                output_name: str | None = None) -> str:
         """Un solo PDF con todas las páginas y marcadores como bookmarks PDF. Retorna job_id."""
@@ -317,7 +252,7 @@ class ExportController(QObject):
         self._pool.start(w)
         return job.id
 
-    def export_ant_split_bookmark(self, folder: str, serial_ini: int, padding: int,
+    def export_ant_split_bookmark(self, folder: str,
                                    desde: int = 0, hasta: int = 0, label: str = "") -> str:
         """Múltiples PDFs usando marcadores como puntos de corte. Retorna job_id."""
         pages = self._m.pages
@@ -392,21 +327,6 @@ class ExportController(QObject):
             job.status    = JobStatus.CANCELLED
             job.error_msg = "Cancelado por el usuario"
         self.job_cancelled.emit(job_id)
-
-    @staticmethod
-    def _build_groups(pages: list[PageData]) -> list[list[PageData]]:
-        if not pages:
-            return []
-        groups, cur = [], []
-        for p in pages:
-            if p.is_cut_point and cur:
-                groups.append(cur)
-                cur = [p]
-            else:
-                cur.append(p)
-        if cur:
-            groups.append(cur)
-        return groups
 
     def export_original_pdf(self, folder: str, label: str = "") -> str:
         pages = self._m.pages
