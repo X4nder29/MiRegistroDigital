@@ -27,12 +27,12 @@ from controllers.scan_controller import ScanController
 from controllers.ocr_controller import OCRController
 from controllers.export_controller import ExportController
 from controllers.visualization_controller import VisualizationController
-from views.document_page import DocumentPage
+from views.digitization_page import DigitizationPage
 from views.pdf_page import EditorPage
 from views.settings_page import SettingsPage
 from views.visualization_page import VisualizationPage
 from views.home_page import HomePage
-from views.widgets import FullscreenViewer, ProcessListDialog
+from views.widgets import ProcessListDialog
 from views.theme import BG, SURFACE, SURFACE2, SURFACE3, BORDER, TEXT, TEXT_DIM, TEXT_SEC, ACCENT2, INFO, WARNING
 
 logger = logging.getLogger("docscan.main")
@@ -108,6 +108,7 @@ class MainWindow(QMainWindow):
         self._project_path: Path | None = None
         self._dirty = False
         self._update_title()
+        self._apply_window_icon()
         logger.info("MainWindow inicializando")
 
         self._cfg    = ConfigModel()
@@ -119,7 +120,6 @@ class MainWindow(QMainWindow):
         self._viz    = VisualizationController(self._cfg, self)
 
         self._pending_pages: list = []
-        self._fullscreen_viewer: FullscreenViewer | None = None
         self._process_dialog: ProcessListDialog | None = None
         self._import_progress_dlg: QProgressDialog | None = None
         self._custom_handlers: dict[str, tuple] = {}
@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         # Unified permanent status bar
         self.statusBar().setSizeGripEnabled(False)
         self.statusBar().setAttribute(Qt.WA_StyledBackground, True)
+        self.statusBar().setContentsMargins(8, 8, 8, 8)
         self._sb_page = QLabel("")
         self._sb_page.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
         self._sb_serial = QLabel("")
@@ -148,10 +149,10 @@ class MainWindow(QMainWindow):
         self._viz_status.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none; padding:0 4px;")
         self.statusBar().addPermanentWidget(self._viz_status)
         self._btn_processes = QPushButton("Procesos")
-        self._btn_processes.setFixedHeight(22)
+        self._btn_processes.setFocusPolicy(Qt.NoFocus)
         self._btn_processes.setStyleSheet(
             f"QPushButton {{ background: {SURFACE2}; border: 1px solid {BORDER}; "
-            f"border-radius: 4px; padding: 0 12px; font-size:8pt; color:{TEXT}; }}"
+            f"border-radius: 4px; padding: 6px 12px; min-height: 0; font-size:8pt; color:{TEXT}; }}"
             f"QPushButton:hover {{ background: {SURFACE3}; }}")
         self._btn_processes.clicked.connect(self._open_process_dialog)
         self.statusBar().addPermanentWidget(self._btn_processes)
@@ -159,7 +160,26 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("Listo")
         self._check_startup_autosave()
+        # Poblar la lista de escáneres apenas arranca la app (no al construir la
+        # ventana) para no demorar el primer paint con la enumeración TWAIN, y así
+        # el combo del dispositivo ya tiene una selección antes de escanear —
+        # evita que open_source(None) muestre el selector nativo de TWAIN.
+        QTimer.singleShot(0, self._on_refresh_scanners)
         logger.info("MainWindow inicializada")
+
+    def _apply_window_icon(self):
+        """Fija el icono de la ventana (además del de la QApplication) para que
+        el taskbar de Windows lo muestre. Prefiere el .ico (tamaños ráster
+        reales); cae a svg/png. Resuelve rutas en desarrollo y PyInstaller."""
+        import sys
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+        for name in ("app_icon.ico", "app_icon.svg", "app_icon.png"):
+            p = base / "resources" / name
+            if p.exists():
+                icon = QIcon(str(p))
+                if not icon.isNull():
+                    self.setWindowIcon(icon)
+                    return
 
     def _build_ui(self):
         central = QWidget()
@@ -175,7 +195,7 @@ class MainWindow(QMainWindow):
 
         self._stack = QStackedWidget()
         self._home_page  = HomePage()
-        self._doc_page   = DocumentPage(config=self._cfg)
+        self._doc_page   = DigitizationPage(config=self._cfg)
         self._pdf_page   = EditorPage(config=self._cfg)
         self._viz_page   = VisualizationPage(self._cfg, self._viz)
         self._sett_page  = SettingsPage(self._cfg)
@@ -250,6 +270,9 @@ class MainWindow(QMainWindow):
         self._process_dialog = None
 
     def _update_title(self):
+        if getattr(self, "_current_nav_key", None) == "home":
+            self.setWindowTitle("MiRegistroDigital")
+            return
         name = self._project_path.name if self._project_path else "Sin t\u00edtulo"
         suffix = " *" if self._dirty else ""
         self.setWindowTitle(f"MiRegistroDigital \u2014 {name}{suffix}")
@@ -476,13 +499,6 @@ class MainWindow(QMainWindow):
         self._export._workers.clear()
         QThreadPool.globalInstance().clear()
 
-        if self._fullscreen_viewer:
-            try:
-                self._fullscreen_viewer.close()
-            except RuntimeError:
-                pass
-            self._fullscreen_viewer = None
-
         self._pending_pages.clear()
         self._custom_handlers.clear()
         self._autosave_worker = None
@@ -604,6 +620,7 @@ class MainWindow(QMainWindow):
             # recomputar el estilo nativo de Windows y quitar el botón de maximizar.
             self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
             self.setFixedSize(*_HOME_SIZE)
+            self._center_on_screen()
             self.show()
         else:
             # Pantallas de herramientas: redimensionables libremente.
@@ -619,8 +636,17 @@ class MainWindow(QMainWindow):
                 self.show()
                 self.showMaximized()
         self._current_nav_key = key
+        self._update_title()
 
         self._cfg.set("ui", "last_page", key)
+
+    def _center_on_screen(self):
+        screen = self.screen() or QApplication.primaryScreen()
+        if not screen:
+            return
+        geo = screen.availableGeometry()
+        w, h = _HOME_SIZE
+        self.move(geo.x() + (geo.width() - w) // 2, geo.y() + (geo.height() - h) // 2)
 
     def _connect(self):
         logger.info("Conectando se\u00f1ales\u2026")
@@ -629,6 +655,7 @@ class MainWindow(QMainWindow):
         # Import
         dp.import_images_requested.connect(self._on_import)
         dp.import_pdf_requested.connect(self._on_import)
+        dp.open_project_requested.connect(self._open_project)
 
         # Scan (TWAIN)
         dp.scan_sources_refresh_requested.connect(self._on_refresh_scanners)
@@ -644,7 +671,6 @@ class MainWindow(QMainWindow):
         dp.cut_toggled.connect(self._on_cut_toggled)
         dp.page_deleted.connect(self._on_page_deleted)
         dp.page_reordered.connect(self._scan.reorder_page)
-        dp.fullscreen_requested.connect(self._open_fullscreen)
 
         # Bookmarks / Comments
         dp.bookmark_set.connect(self._scan.set_bookmark)
@@ -663,7 +689,6 @@ class MainWindow(QMainWindow):
         dp.export_civil_requested.connect(self._on_civil_export)
         dp.export_bookmark_requested.connect(self._on_civil_export_bookmark)
         dp.export_original_pdf_requested.connect(self._on_export_original_pdf)
-        dp.export_ant_requested.connect(self._on_ant_export)
         dp.export_ant_single_pdf.connect(self._on_ant_export_single_pdf)
         dp.export_ant_split_bookmark.connect(self._on_ant_export_split_bookmark)
         dp.merge_requested.connect(self._on_merge_pdfs)
@@ -679,13 +704,13 @@ class MainWindow(QMainWindow):
             f"Importaci\u00f3n completa \u2014 {self._model.count} p\u00e1gina(s)"))
 
         self._scan.error.connect(self._on_error)
-        self._scan.error.connect(lambda msg: dp.set_scanning(False))
         self._scan.correction_done.connect(self._on_correction_done)
 
         self._scan.scan_progress.connect(dp.set_scan_progress)
         self._scan.scan_done.connect(self._flush_pending_pages)
         self._scan.scan_done.connect(lambda: self.statusBar().showMessage(
             f"Escaneo completo — {self._model.count} página(s)"))
+        self._scan.scan_error.connect(self._on_scan_error)
 
         # OCR signals
         self._ocr.ocr_result.connect(self._on_ocr_result)
@@ -840,6 +865,12 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
 
+    @Slot(str)
+    def _on_scan_error(self, msg: str):
+        self._doc_page.set_scanning(False)
+        self.statusBar().showMessage(f"Escáner: {msg}", 6000)
+        QMessageBox.warning(self, "Escáner", msg)
+
     @Slot(object)
     def _on_page_queued(self, page):
         self._pending_pages.append(page)
@@ -877,8 +908,6 @@ class MainWindow(QMainWindow):
     def _on_cut_toggled(self, index: int):
         is_cut = self._model.toggle_cut(index)
         self._doc_page.set_cut(index, is_cut)
-        self._doc_page.update_groups(
-            [[p.index for p in g] for g in self._model.get_groups()])
         self._mark_dirty()
 
     @Slot()
@@ -886,7 +915,6 @@ class MainWindow(QMainWindow):
         self._model.set_cuts(set())
         for page in self._model.pages:
             self._doc_page.set_cut(page.index, False)
-        self._doc_page.update_groups([])
 
     @Slot()
     def _on_ocr_all(self):
@@ -1044,29 +1072,12 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(w)
 
     @Slot(dict)
-    def _on_ant_export(self, params: dict):
-        logger.info("Exportaci\u00f3n antecedentes solicitada -> %s", params.get("folder"))
-        self._doc_page.export_started()
-        job_id = self._export.export_ant(
-            params["folder"],
-            params["serial_ini"],
-            params["padding"],
-            params.get("desde", 0),
-            params.get("hasta", 0),
-            "Antecedentes",
-        )
-        if not job_id:
-            self._doc_page.export_error("No hay grupos de p\u00e1ginas para exportar.")
-
-    @Slot(dict)
     def _on_ant_export_single_pdf(self, params: dict):
         logger.info("Antecedentes PDF \u00fanico solicitado -> %s", params.get("folder"))
         self._doc_page.export_single_started()
         output_name = self._project_path.stem + "_bookmarked.pdf" if self._project_path else None
         job_id = self._export.export_ant_single_pdf(
             params["folder"],
-            params["serial_ini"],
-            params["padding"],
             params.get("desde", 0),
             params.get("hasta", 0),
             "Antecedentes PDF \u00fanico",
@@ -1089,8 +1100,6 @@ class MainWindow(QMainWindow):
         self._doc_page.export_split_started()
         job_id = self._export.export_ant_split_bookmark(
             params["folder"],
-            params["serial_ini"],
-            params["padding"],
             params.get("desde", 0),
             params.get("hasta", 0),
             "Antecedentes por marcador",
@@ -1210,20 +1219,6 @@ class MainWindow(QMainWindow):
                 f"QPushButton {{ background: {SURFACE2}; border: 1px solid {BORDER}; "
                 f"border-radius: 4px; padding: 0 12px; font-size:9pt; color:{TEXT}; }}"
                 f"QPushButton:hover {{ background: {SURFACE3}; }}")
-
-    @Slot(int)
-    def _open_fullscreen(self, index: int):
-        pages = self._model.pages
-        if not pages:
-            return
-        self._fullscreen_viewer = FullscreenViewer(list(pages), start=index, config=self._cfg)
-        self._fullscreen_viewer.bookmark_changed.connect(self._scan.set_bookmark)
-        self._fullscreen_viewer.comment_changed.connect(self._on_comment_set)
-        self._fullscreen_viewer.finished.connect(self._on_fullscreen_closed)
-        self._fullscreen_viewer.show()
-
-    def _on_fullscreen_closed(self):
-        self._fullscreen_viewer = None
 
     def closeEvent(self, event):
         self._autosave_timer.stop()

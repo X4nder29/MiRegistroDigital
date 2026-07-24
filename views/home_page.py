@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 
 from views.theme import BG, SURFACE, SURFACE2, BORDER, TEXT, TEXT_SEC, ACCENT2
 
+
 _TOOLS = [
     ("documentos",    "\U0001f4c4", "Digitalización"),
     ("pdf",           "\U0001f4cb", "Editor"),
@@ -96,6 +97,7 @@ class HomePage(QWidget):
         settings_btn = QPushButton("⚙️  Ajustes")
         settings_btn.setFixedHeight(32)
         settings_btn.setCursor(Qt.PointingHandCursor)
+        settings_btn.setFocusPolicy(Qt.NoFocus)
         settings_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {SURFACE2};

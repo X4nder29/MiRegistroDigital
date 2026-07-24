@@ -5,28 +5,49 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QPushButton, QLabel, QFrame, QProgressBar, QFileDialog,
-    QSlider, QTabWidget, QGroupBox, QSpinBox,
+    QSlider, QTabWidget, QGroupBox, QSpinBox, QFormLayout,
     QCheckBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QMessageBox, QListWidget,
     QListWidgetItem, QPlainTextEdit, QScrollArea, QComboBox,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import (
+    QColor, QFont, QKeySequence, QShortcut, QIcon, QPixmap, QPainter,
+    QTransform,
+)
 
 from views.widgets import ThumbnailGrid, ImageViewer
 from models.config_model import ConfigModel
 from models.scan_settings import ScanSettings
 from views.theme import (
-    SURFACE, BG,
+    SURFACE, SURFACE2, SURFACE3, BG, BORDER,
     TEXT, TEXT_SEC, TEXT_DIM, SUCCESS, DANGER, WARNING, INFO,
-    ACCENT2, pill_qss, COMPACT_LIST_QSS,
+    ACCENT2, pill_qss, COMPACT_LIST_QSS, _hex_to_rgba,
 )
 
 
-class DocumentPage(QWidget):
+def _emoji_icon(emoji: str, size: int = 20) -> QIcon:
+    """Renderiza un emoji a un QIcon, rotado 90° para orientarlo correctamente
+    en la barra de pestañas West (barra lateral izquierda)."""
+    box = size + 10
+    pm = QPixmap(box, box)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    f = QFont()
+    f.setPointSize(size)
+    p.setFont(f)
+    p.drawText(pm.rect(), Qt.AlignCenter, emoji)
+    p.end()
+    pm = pm.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
+    return QIcon(pm)
+
+
+class DigitizationPage(QWidget):
     # ── Import ──
     import_images_requested = Signal(list)
     import_pdf_requested    = Signal(list)
+    open_project_requested  = Signal()
 
     # ── Scan (TWAIN) ──
     scan_sources_refresh_requested = Signal()
@@ -56,20 +77,20 @@ class DocumentPage(QWidget):
     page_deleted       = Signal(int)
     page_reordered     = Signal(int, int)
     page_reordered_seq = Signal(list)
-    fullscreen_requested = Signal(int)
 
     # ── Export ──
     export_civil_requested       = Signal(str)
     export_bookmark_requested    = Signal(str)
     export_original_pdf_requested = Signal(str)
 
-    export_ant_requested          = Signal(dict)
     export_ant_single_pdf         = Signal(dict)
     export_ant_split_bookmark     = Signal(dict)
 
     merge_requested            = Signal(list, str)
 
-    COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS, COL_BOOKMARK, COL_COMMENT = 0, 1, 2, 3, 4, 5
+    # Tabla OCR: 4 columnas. Marcador/Comentario se muestran en la pestaña Info
+    # y en las miniaturas, no aquí.
+    COL_NUM, COL_SERIAL, COL_CONF, COL_STATUS = 0, 1, 2, 3
 
     def __init__(self, parent=None, config: ConfigModel | None = None):
         super().__init__(parent)
@@ -99,21 +120,21 @@ class DocumentPage(QWidget):
         splitter.setHandleWidth(1)
 
         # ── Left: Thumbnail grid ──
+        # Sin tope superior de ancho: el usuario puede expandir el panel con el
+        # divisor tanto como permitan los mínimos del visor/panel derecho
+        # (QListView.Adjust reorganiza las miniaturas en varias columnas).
         self.grid = ThumbnailGrid()
-        self.grid.setMinimumWidth(170)
-        self.grid.setMaximumWidth(220)
+        self.grid.setMinimumWidth(150)
         self.grid.page_selected.connect(self._on_page_selected)
         self.grid.cut_toggled.connect(self.cut_toggled)
         self.grid.page_deleted.connect(self.page_deleted)
-        self.grid.fullscreen_requested.connect(self.fullscreen_requested)
         self.grid.reorder_requested.connect(self.page_reordered)
         self.grid.bookmark_requested.connect(self._on_bookmark_requested)
         self.grid.comment_requested.connect(self._on_comment_requested)
         splitter.addWidget(self.grid)
 
-        # ── Center: Viewer ──
-        self.viewer = ImageViewer()
-        splitter.addWidget(self.viewer)
+        # ── Center: Viewer (with zoom/pan) ──
+        splitter.addWidget(self._build_viewer_panel())
 
         # ── Right: Tabbed panel ──
         self._right_panel = self._build_right_panel()
@@ -134,6 +155,24 @@ class DocumentPage(QWidget):
         if self._cfg:
             seq = self._cfg.get("shortcuts", "import_pdf", seq)
         QShortcut(QKeySequence(seq), self, self._open_pdf)
+
+        scan_seq = "Ctrl+K"
+        if self._cfg:
+            scan_seq = self._cfg.get("shortcuts", "scan", scan_seq)
+        QShortcut(QKeySequence(scan_seq), self, self._start_scan)
+
+        # Atajo para añadir marcador a la página actual — recupera la función
+        # que tenía la antigua "Vista completa" (FullscreenViewer, Ctrl+B).
+        bm_seq = "Ctrl+B"
+        if self._cfg:
+            bm_seq = self._cfg.get("shortcuts", "bookmark", bm_seq)
+        QShortcut(QKeySequence(bm_seq), self, self._shortcut_add_bookmark)
+
+    def _shortcut_add_bookmark(self):
+        """Añade un marcador a la página en vista previa (mismo flujo que el
+        botón "Añadir" de la pestaña Info). No hace nada sin página activa."""
+        if self._current_idx >= 0:
+            self._info_add_bookmark()
 
     def _build_empty_state(self) -> QWidget:
         w = QWidget()
@@ -166,47 +205,198 @@ class DocumentPage(QWidget):
         self._btn_scan.setFixedHeight(36)
         self._btn_scan.setFixedWidth(190)
         self._btn_scan.setFocusPolicy(Qt.NoFocus)
-        self._btn_scan.setToolTip("Escanear con un dispositivo TWAIN (ver pestaña Escáner)")
-        self._btn_scan.clicked.connect(self._start_scan)
+        self._btn_scan.setToolTip("Configurar y escanear con un dispositivo TWAIN")
+        self._btn_scan.clicked.connect(self._show_scanner_tab)
         btn_row.addWidget(self._btn_scan)
+
+        btn_open = QPushButton("📂  Abrir proyecto")
+        btn_open.setFixedHeight(36)
+        btn_open.setFixedWidth(190)
+        btn_open.setFocusPolicy(Qt.NoFocus)
+        btn_open.clicked.connect(self.open_project_requested)
+        btn_row.addWidget(btn_open)
 
         lay.addLayout(btn_row)
 
         return w
 
+    # ── Viewer panel (center, with zoom/pan) ──
+
+    def _build_viewer_panel(self) -> QWidget:
+        panel = QWidget()
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        # La barra de zoom vive ahora al pie de la tira de pestañas (ver
+        # _build_zoom_controls / setCornerWidget), no en una barra superior.
+        self.viewer = ImageViewer()
+        self.viewer.set_zoom_enabled(True)
+        self.viewer.page_nav.connect(self._navigate_page)
+        self.viewer.area_selected.connect(self._on_viewer_area_selected)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(False)
+        scroll.setAlignment(Qt.AlignCenter)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        scroll.setWidget(self.viewer)
+        v.addWidget(scroll, 1)
+
+        for seq in ("Ctrl++", "Ctrl+=", "Ctrl+-", "Ctrl+0"):
+            slot = self._zoom_fit if seq == "Ctrl+0" else (self._zoom_out if seq == "Ctrl+-" else self._zoom_in)
+            QShortcut(QKeySequence(seq), self, slot)
+
+        return panel
+
+    def _zoom_in(self):
+        self.viewer.zoom_in()
+
+    def _zoom_out(self):
+        self.viewer.zoom_out()
+
+    def _zoom_fit(self):
+        self.viewer.zoom_fit()
+
     # ── Right tabbed panel ──
 
     def _build_right_panel(self) -> QWidget:
         panel = QWidget()
+        # Sin tope superior de ancho: el usuario puede expandir el panel derecho
+        # con el divisor tanto como permitan los mínimos del visor/panel izquierdo.
         panel.setMinimumWidth(300)
-        panel.setMaximumWidth(420)
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
         self._tabs = QTabWidget()
+        self._tabs.setTabPosition(QTabWidget.West)
+        self._tabs.setIconSize(QSize(22, 22))
+        # Banda contrastante a lo alto de todo el panel: el fondo del QTabWidget
+        # (SURFACE2) se ve en toda la columna izquierda, mientras el panel de
+        # contenido (pane) pinta BG encima — así la tira de pestañas lee como
+        # una franja distinta de arriba a abajo, no solo detrás de cada botón.
         self._tabs.setStyleSheet(f"""
-            QTabWidget::pane {{ border: none; background: {BG}; }}
+            QTabWidget {{ background: {SURFACE2}; }}
+            QTabWidget::pane {{
+                border: none; border-left: 1px solid {BORDER}; background: {BG};
+            }}
+            QTabBar {{ background: transparent; }}
             QTabBar::tab {{
-                background: {BG}; color: {TEXT_DIM}; border: none;
-                padding: 8px 16px; font-size: 9pt;
+                background: transparent; color: {TEXT_DIM};
+                border: none;
+                /* Celdas CUADRADAS (~{self._TAB_STRIP_W}px de lado): el ancho de
+                   contenido (min-width) + el indicador de 3px = ancho de tira;
+                   el padding vertical iguala la altura al ancho. El indicador de
+                   selección se reserva en TODOS los estados (transparent) para
+                   que el icono no se desplace ni la celda cambie de tamaño. */
+                border-right: 3px solid transparent;
+                padding: 5px 0px;
+                min-width: {self._TAB_STRIP_W - 3}px;
+                min-height: 22px;
             }}
             QTabBar::tab:selected {{
-                color: {TEXT}; border-bottom: 2px solid {ACCENT2};
+                color: {TEXT}; background: {BG};
+                border-right: 3px solid {ACCENT2};
             }}
-            QTabBar::tab:hover {{
-                color: {TEXT_SEC};
+            QTabBar::tab:hover:!selected {{
+                background: {SURFACE3};
             }}
         """)
 
-        self._tabs.addTab(self._build_info_tab(), "   Info   ")
-        self._tabs.addTab(self._build_correction_tab(), "   Corrección   ")
-        self._tabs.addTab(self._build_scanner_tab(), "   Escáner   ")
-        self._tabs.addTab(self._build_ocr_tab(), "   OCR   ")
-        self._tabs.addTab(self._build_export_tab(), "   Exportar   ")
+        # Iconos (emoji rasterizados a QIcon) en vez de texto — con 5 pestañas,
+        # texto horizontal desborda el panel (300-420px). Un icono NO se rota en
+        # posición West (solo el texto sí), por eso se ven verticales/derechos.
+        self._tabs.addTab(self._build_info_tab(), _emoji_icon("ℹ️"), "")
+        self._tabs.setTabToolTip(0, "Info")
+        self._tabs.addTab(self._build_correction_tab(), _emoji_icon("📐"), "")
+        self._tabs.setTabToolTip(1, "Corrección")
+        self._scanner_tab = self._build_scanner_tab()
+        self._tabs.addTab(self._scanner_tab, _emoji_icon("🖨"), "")
+        self._tabs.setTabToolTip(2, "Escáner")
+        self._tabs.addTab(self._build_ocr_tab(), _emoji_icon("🔤"), "")
+        self._tabs.setTabToolTip(3, "OCR")
+        self._tabs.addTab(self._build_export_tab(), _emoji_icon("📤"), "")
+        self._tabs.setTabToolTip(4, "Exportar")
 
         v.addWidget(self._tabs, 1)
+
+        # Columna de zoom anclada al PIE de la tira de pestañas West. Qt no
+        # coloca cornerWidgets en pestañas West (quedan con geometría 0), así que
+        # se superpone como hijo del QTabWidget, reposicionado en eventFilter.
+        # Ancho = ancho de la tira (STRIP_W) para que continúe la banda SURFACE2.
+        self._zoom_bar = self._build_zoom_controls()
+        self._zoom_bar.setParent(self._tabs)
+        self._zoom_bar.setFixedWidth(self._TAB_STRIP_W)
+        self._tabs.installEventFilter(self)
+        self._reposition_zoom_bar()
         return panel
+
+    _TAB_STRIP_W = 48  # lado de la celda cuadrada de pestaña = ancho de la tira West
+
+    def _build_zoom_controls(self) -> QWidget:
+        """Columna de botones de zoom anclada al fondo de la tira de pestañas.
+        Fondo TRANSPARENTE: se superpone sobre el QTabWidget (banda SURFACE2), así
+        que los botones se funden con la misma tira continua que los iconos de
+        pestaña, sin recuadro. Glifos monocromos (+ / − / ⤢) que renderizan
+        limpios, en vez de los emoji-lupa anteriores."""
+        w = QWidget()
+        # Sin fondo propio (transparent → deja ver la banda SURFACE2 del
+        # QTabWidget). Botones también transparentes; hover/pressed discretos
+        # (utilidad, no acción focal). Estrategia de profundidad: solo bordes.
+        w.setStyleSheet(f"""
+            QWidget {{ background: transparent; }}
+            QPushButton {{
+                background: transparent; color: {TEXT_SEC};
+                border: none; border-radius: 7px;
+                font-size: 15pt; font-weight: 500;
+                padding: 0;
+            }}
+            QPushButton:hover {{ background: {SURFACE3}; color: {TEXT}; }}
+            QPushButton:pressed {{ background: {BORDER}; color: {TEXT}; }}
+        """)
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(5, 8, 5, 10)
+        lay.setSpacing(4)
+        # Separador superior: marca dónde terminan las pestañas y empiezan
+        # los controles, dentro de la misma banda.
+        top_border = QFrame()
+        top_border.setFixedHeight(1)
+        top_border.setStyleSheet(f"background: {BORDER}; border: none;")
+        lay.addWidget(top_border)
+        lay.addSpacing(4)
+        # Zoom +/− son las acciones frecuentes: van juntas. "Ajustar" es
+        # secundaria, separada por un pequeño hueco.
+        for glyph, tip, slot, gap_after in [
+            ("+",  "Acercar (Ctrl++)", self._zoom_in,  False),
+            ("−",  "Alejar (Ctrl+-)",  self._zoom_out, True),
+            ("⤢",  "Ajustar (Ctrl+0)", self._zoom_fit, False),
+        ]:
+            b = QPushButton(glyph)
+            b.setFixedSize(40, 32)
+            b.setToolTip(tip)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.clicked.connect(slot)
+            lay.addWidget(b, 0, Qt.AlignHCenter)
+            if gap_after:
+                lay.addSpacing(6)
+        return w
+
+    def _reposition_zoom_bar(self):
+        """Ancla la columna de zoom al fondo-izquierda del QTabWidget (sobre la
+        parte baja, vacía, de la banda de pestañas)."""
+        if not hasattr(self, "_zoom_bar"):
+            return
+        h = self._zoom_bar.sizeHint().height()
+        self._zoom_bar.setGeometry(0, max(0, self._tabs.height() - h),
+                                   self._TAB_STRIP_W, h)
+        self._zoom_bar.raise_()
+        self._zoom_bar.show()
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self._tabs and event.type() == QEvent.Resize:
+            self._reposition_zoom_bar()
+        return super().eventFilter(obj, event)
 
     # ── Tab: Info ──
 
@@ -218,7 +408,7 @@ class DocumentPage(QWidget):
         c = QWidget()
         v = QVBoxLayout(c)
         v.setContentsMargins(16, 12, 16, 12)
-        v.setSpacing(10)
+        v.setSpacing(16)
 
         # Serial — el dato más importante de la página: tamaño/peso propios,
         # no una fila más de un QFormLayout genérico.
@@ -237,8 +427,9 @@ class DocumentPage(QWidget):
         hero_row.addWidget(self._info_conf, 0, Qt.AlignVCenter)
         sv.addLayout(hero_row)
 
+        sv.addSpacing(8)  # separa la lectura (serial) de la acción (corregir)
         self._btn_override = QPushButton("Corregir serial…")
-        self._btn_override.setFixedHeight(30)
+        self._btn_override.setFixedHeight(32)
         self._btn_override.clicked.connect(self._info_override_serial)
         sv.addWidget(self._btn_override)
         v.addWidget(serial_grp)
@@ -246,19 +437,21 @@ class DocumentPage(QWidget):
         # Bookmarks
         bm_grp = QGroupBox("Marcadores")
         bml = QVBoxLayout(bm_grp)
+        bml.setSpacing(8)
         self._bm_list = QListWidget()
         self._bm_list.setFixedHeight(80)
         self._bm_list.setStyleSheet(COMPACT_LIST_QSS)
         bml.addWidget(self._bm_list)
         bm_btns = QHBoxLayout()
+        bm_btns.setSpacing(8)
         btn_bm_add = QPushButton("Añadir")
-        btn_bm_add.setFixedHeight(28)
+        btn_bm_add.setFixedHeight(32)
         btn_bm_add.clicked.connect(self._info_add_bookmark)
         btn_bm_edit = QPushButton("Editar")
-        btn_bm_edit.setFixedHeight(28)
+        btn_bm_edit.setFixedHeight(32)
         btn_bm_edit.clicked.connect(self._info_edit_bookmark)
         btn_bm_del = QPushButton("Quitar")
-        btn_bm_del.setFixedHeight(28)
+        btn_bm_del.setFixedHeight(32)
         btn_bm_del.clicked.connect(self._info_del_bookmark)
         bm_btns.addWidget(btn_bm_add)
         bm_btns.addWidget(btn_bm_edit)
@@ -284,7 +477,7 @@ class DocumentPage(QWidget):
 
         # Clear cuts
         btn_clear_cuts = QPushButton("Limpiar todos los cortes")
-        btn_clear_cuts.setFixedHeight(30)
+        btn_clear_cuts.setFixedHeight(32)
         btn_clear_cuts.clicked.connect(self.clear_cuts_requested)
         v.addWidget(btn_clear_cuts)
 
@@ -305,10 +498,11 @@ class DocumentPage(QWidget):
         c = QWidget()
         v = QVBoxLayout(c)
         v.setContentsMargins(16, 12, 16, 12)
-        v.setSpacing(10)
+        v.setSpacing(16)
 
         rot_grp = QGroupBox("Rotación fina")
         rl = QVBoxLayout(rot_grp)
+        rl.setSpacing(8)
         slider_row = QHBoxLayout()
         self._rot_slider = QSlider(Qt.Horizontal)
         self._rot_slider.setRange(-45, 45)
@@ -323,10 +517,11 @@ class DocumentPage(QWidget):
         rl.addLayout(slider_row)
 
         quick_row = QHBoxLayout()
+        quick_row.setSpacing(8)
         ang_btns = [(-90, "-90°"), (90, "90°"), (180, "180°")]
         for a, t in ang_btns:
             btn = QPushButton(t)
-            btn.setFixedHeight(28)
+            btn.setFixedHeight(32)
             btn.clicked.connect(lambda checked, aa=a: self._on_quick_rot(aa))
             quick_row.addWidget(btn)
         rl.addLayout(quick_row)
@@ -361,70 +556,68 @@ class DocumentPage(QWidget):
         c = QWidget()
         v = QVBoxLayout(c)
         v.setContentsMargins(16, 12, 16, 12)
-        v.setSpacing(10)
+        v.setSpacing(16)
 
         cfg = self._cfg.section("scanner") if self._cfg else {}
 
-        grp = QGroupBox("Escáner")
-        gl = QVBoxLayout(grp)
-        gl.setSpacing(8)
+        # ── Isla de opciones ──
+        # Un QFormLayout alinea todas las etiquetas a la izquierda de forma
+        # consistente (antes se mezclaba "etiqueta arriba" con "etiqueta en
+        # línea"). El título de la isla es "Opciones de escaneo": la pestaña ya
+        # aporta el contexto "Escáner", repetirlo era redundante.
+        grp = QGroupBox("Opciones de escaneo")
+        form = QFormLayout(grp)
+        form.setSpacing(10)
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         # Device
-        dev_row = QHBoxLayout()
         self._scan_device = QComboBox()
         self._scan_device.setEditable(False)
-        dev_row.addWidget(self._scan_device, 1)
-        btn_refresh = QPushButton("🔄")
-        btn_refresh.setFixedWidth(32)
-        btn_refresh.setFixedHeight(28)
-        btn_refresh.setToolTip("Actualizar lista de escáneres")
-        btn_refresh.clicked.connect(self.scan_sources_refresh_requested)
-        dev_row.addWidget(btn_refresh)
-        gl.addWidget(QLabel("Dispositivo:"))
-        gl.addLayout(dev_row)
+        form.addRow("Dispositivo:", self._scan_device)
 
         # DPI
-        dpi_row = QHBoxLayout()
-        dpi_row.addWidget(QLabel("Resolución (DPI):"))
         self._scan_dpi = QSpinBox()
         self._scan_dpi.setRange(100, 1200)
         self._scan_dpi.setSingleStep(50)
         self._scan_dpi.setValue(cfg.get("dpi", 300))
-        dpi_row.addWidget(self._scan_dpi)
-        dpi_row.addStretch()
-        gl.addLayout(dpi_row)
+        form.addRow("Resolución (DPI):", self._scan_dpi)
 
         # Color mode
-        color_row = QHBoxLayout()
-        color_row.addWidget(QLabel("Modo de color:"))
         self._scan_color = QComboBox()
         self._scan_color.addItem("Color", "color")
         self._scan_color.addItem("Escala de grises", "grayscale")
         self._scan_color.addItem("Blanco y negro", "bw")
         idx = max(0, self._scan_color.findData(cfg.get("color_mode", "color")))
         self._scan_color.setCurrentIndex(idx)
-        color_row.addWidget(self._scan_color, 1)
-        gl.addLayout(color_row)
+        form.addRow("Modo de color:", self._scan_color)
 
         # Source (ADF / Flatbed)
-        src_row = QHBoxLayout()
-        src_row.addWidget(QLabel("Origen:"))
         self._scan_source = QComboBox()
         self._scan_source.addItem("Alimentador automático (ADF)", "adf")
         self._scan_source.addItem("Cristal (Flatbed)", "flatbed")
         idx = max(0, self._scan_source.findData(cfg.get("source", "adf")))
         self._scan_source.setCurrentIndex(idx)
         self._scan_source.currentIndexChanged.connect(self._on_scan_source_changed)
-        src_row.addWidget(self._scan_source, 1)
-        gl.addLayout(src_row)
+        form.addRow("Origen:", self._scan_source)
 
-        # Duplex
+        # Duplex — fila sin etiqueta; el checkbox pinta transparente (regla
+        # global QCheckBox) para no mostrar un recuadro de fondo distinto.
         self._scan_duplex = QCheckBox("Escaneo dúplex (ambas caras)")
         self._scan_duplex.setChecked(cfg.get("duplex", True))
-        gl.addWidget(self._scan_duplex)
+        form.addRow("", self._scan_duplex)
         self._on_scan_source_changed()
 
         v.addWidget(grp)
+
+        # Actualizar escáneres — acción secundaria prominente (antes solo un
+        # icono 🔄 diminuto junto al combo). Reusa scan_sources_refresh_requested.
+        self._btn_scan_refresh = QPushButton("🔄  Actualizar escáneres")
+        self._btn_scan_refresh.setFixedHeight(32)
+        self._btn_scan_refresh.setToolTip("Volver a detectar los dispositivos TWAIN conectados")
+        self._btn_scan_refresh.clicked.connect(self.scan_sources_refresh_requested)
+        v.addWidget(self._btn_scan_refresh)
 
         self._btn_scan_tab = QPushButton("🖨  Escanear")
         self._btn_scan_tab.setProperty("primary", True)
@@ -432,10 +625,25 @@ class DocumentPage(QWidget):
         self._btn_scan_tab.clicked.connect(self._start_scan)
         v.addWidget(self._btn_scan_tab)
 
+        # Botón contorneado (outline): borde rojo visible sobre fondo
+        # transparente para que lea claramente como acción de cancelar.
         self._btn_scan_cancel = QPushButton("Cancelar escaneo")
         self._btn_scan_cancel.setProperty("danger", True)
-        self._btn_scan_cancel.setFixedHeight(30)
+        self._btn_scan_cancel.setFixedHeight(32)
         self._btn_scan_cancel.setVisible(False)
+        self._btn_scan_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {DANGER};
+                border: 1px solid {DANGER};
+                border-radius: 6px;
+                padding: 6px 16px;
+            }}
+            QPushButton:hover {{
+                background: {_hex_to_rgba(DANGER, 0.12)};
+                border-color: {DANGER};
+            }}
+        """)
         self._btn_scan_cancel.clicked.connect(self.scan_cancel_requested)
         v.addWidget(self._btn_scan_cancel)
 
@@ -463,15 +671,12 @@ class DocumentPage(QWidget):
         v.setSpacing(0)
 
         # Table
-        self._ocr_table = QTableWidget(0, 6)
+        self._ocr_table = QTableWidget(0, 4)
         self._ocr_table.setHorizontalHeaderLabels(
-            ["Página", "Serial OCR", "Confianza", "Estado", "Marcador", "Comentario"])
+            ["Página", "Serial OCR", "Confianza", "Estado"])
         self._ocr_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._ocr_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self._ocr_table.setColumnWidth(0, 55)
-        self._ocr_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
-        self._ocr_table.setColumnWidth(4, 100)
-        self._ocr_table.setColumnWidth(5, 80)
         self._ocr_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._ocr_table.setEditTriggers(
             QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
@@ -499,14 +704,33 @@ class DocumentPage(QWidget):
         self._ocr_prog.setVisible(False)
         self._ocr_prog.setFixedWidth(100)
 
+        # Selector de área OCR: al activarlo, el usuario dibuja un rectángulo
+        # sobre la vista previa; ese área (normalizada) se aplica a TODAS las
+        # páginas para acotar dónde busca el serial el OCR.
+        self._btn_ocr_area = QPushButton("Área OCR")
+        self._btn_ocr_area.setFixedHeight(32)
+        self._btn_ocr_area.setCheckable(True)
+        self._btn_ocr_area.setToolTip(
+            "Selecciona en la vista previa la zona donde el OCR buscará el serial "
+            "(se aplica a todas las páginas)")
+        self._btn_ocr_area.toggled.connect(self._toggle_ocr_area)
+
         btn_ocr_page = QPushButton("OCR página")
-        btn_ocr_page.setFixedHeight(28)
+        btn_ocr_page.setFixedHeight(32)
         btn_ocr_page.clicked.connect(self._ocr_selected)
+
+        # OCR de todas las páginas — se procesan en paralelo según "Hilos".
+        self._btn_ocr_all = QPushButton("OCR todo")
+        self._btn_ocr_all.setProperty("primary", True)
+        self._btn_ocr_all.setFixedHeight(32)
+        self._btn_ocr_all.setToolTip(
+            "Ejecuta OCR en todas las páginas pendientes en paralelo")
+        self._btn_ocr_all.clicked.connect(self.ocr_all_requested)
 
         self._ocr_cores_spin = QSpinBox()
         self._ocr_cores_spin.setRange(1, 16)
         self._ocr_cores_spin.setValue(4)
-        self._ocr_cores_spin.setFixedWidth(55)
+        self._ocr_cores_spin.setFixedWidth(68)
         self._ocr_cores_spin.valueChanged.connect(self._on_cores_changed)
         cores_lbl = QLabel("Hilos:")
         cores_lbl.setStyleSheet(f"font-size:8pt; border:none; color:{TEXT_DIM};")
@@ -514,12 +738,27 @@ class DocumentPage(QWidget):
         bl.addWidget(self._ocr_summary)
         bl.addWidget(self._ocr_prog)
         bl.addStretch()
+        bl.addWidget(self._btn_ocr_area)
         bl.addWidget(btn_ocr_page)
+        bl.addWidget(self._btn_ocr_all)
         bl.addWidget(cores_lbl)
         bl.addWidget(self._ocr_cores_spin)
         v.addWidget(bottom)
 
         return w
+
+    def _toggle_ocr_area(self, checked: bool):
+        """Activa/desactiva el modo de selección de área sobre la vista previa."""
+        self.viewer.enable_area_selection(checked)
+        if checked:
+            self._tabs.setCurrentIndex(3)  # asegura visible la pestaña OCR
+
+    def _on_viewer_area_selected(self, x1: float, y1: float, x2: float, y2: float):
+        """El usuario terminó de dibujar el área en la vista previa."""
+        idx = self._current_idx if self._current_idx >= 0 else 0
+        self.ocr_area_saved.emit(idx, x1, y1, x2, y2)
+        self._btn_ocr_area.setChecked(False)
+        self.viewer.enable_area_selection(False)
 
     # ── Tab: Export ──
 
@@ -531,7 +770,7 @@ class DocumentPage(QWidget):
         c = QWidget()
         v = QVBoxLayout(c)
         v.setContentsMargins(16, 12, 16, 12)
-        v.setSpacing(12)
+        v.setSpacing(16)
 
         # ── Folder destination (shared) ──
         folder_grp = QGroupBox("Destino")
@@ -539,77 +778,30 @@ class DocumentPage(QWidget):
         self._export_folder = QLineEdit()
         self._export_folder.setPlaceholderText("Carpeta de destino…")
         btn_browse = QPushButton("Examinar")
-        btn_browse.setFixedHeight(30)
+        btn_browse.setFixedHeight(32)
         btn_browse.clicked.connect(self._export_browse)
         fl.addWidget(self._export_folder, 1)
         fl.addWidget(btn_browse)
         v.addWidget(folder_grp)
 
-        # ── Civil exports ──
+        # ── Registros Civiles ──
         civil_grp = QGroupBox("Registros Civiles")
-        cl = QVBoxLayout(civil_grp)
-        cl.setSpacing(6)
-
-        self._btn_exp_civil = QPushButton("ZIP — un PDF por página (serial)")
-        self._btn_exp_civil.setProperty("primary", True)
-        self._btn_exp_civil.setFixedHeight(32)
-        self._btn_exp_civil.clicked.connect(self._do_export_civil)
-        cl.addWidget(self._btn_exp_civil)
-
-        self._btn_exp_civil_bm = QPushButton("ZIP — un PDF por página (marcador)")
-        self._btn_exp_civil_bm.setFixedHeight(32)
-        self._btn_exp_civil_bm.clicked.connect(self._do_export_civil_bookmark)
-        cl.addWidget(self._btn_exp_civil_bm)
-
-        self._btn_exp_orig = QPushButton("PDF original (imágenes + comentarios)")
-        self._btn_exp_orig.setFixedHeight(32)
-        self._btn_exp_orig.clicked.connect(self._do_export_original)
-        cl.addWidget(self._btn_exp_orig)
-
-        self._btn_exp_merge = QPushButton("Unir PDFs externos…")
-        self._btn_exp_merge.setFixedHeight(32)
-        self._btn_exp_merge.clicked.connect(self._switch_merge_tab)
-        cl.addWidget(self._btn_exp_merge)
-
-        v.addWidget(civil_grp)
-
-        # ── Antecedentes exports ──
-        ant_grp = QGroupBox("Antecedentes (agrupados por corte)")
-        al = QVBoxLayout(ant_grp)
-        al.setSpacing(6)
-
-        num_row = QHBoxLayout()
-        num_row.addWidget(QLabel("Serial inicial:"))
-        self._ant_serial = QSpinBox()
-        self._ant_serial.setRange(1, 999999)
-        self._ant_serial.setValue(1)
-        self._ant_serial.setFixedWidth(80)
-        num_row.addWidget(self._ant_serial)
-        num_row.addWidget(QLabel("Dígitos:"))
-        self._ant_pad = QSpinBox()
-        self._ant_pad.setRange(1, 10)
-        self._ant_pad.setValue(5)
-        self._ant_pad.setFixedWidth(55)
-        self._ant_pad.valueChanged.connect(self._update_ant_preview)
-        num_row.addWidget(self._ant_pad)
-        self._ant_preview = QLabel("Ej: 00001.pdf")
-        self._ant_preview.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none;")
-        num_row.addWidget(self._ant_preview)
-        num_row.addStretch()
-        al.addLayout(num_row)
+        al = QVBoxLayout(civil_grp)
+        al.setSpacing(8)
 
         rng_row = QHBoxLayout()
+        rng_row.setSpacing(8)
         self._ant_chk_range = QCheckBox("Rango")
         self._ant_chk_range.stateChanged.connect(self._toggle_ant_range)
         self._ant_desde = QSpinBox()
         self._ant_desde.setRange(1, 9999)
         self._ant_desde.setEnabled(False)
-        self._ant_desde.setFixedWidth(55)
+        self._ant_desde.setFixedWidth(78)
         self._ant_hasta = QSpinBox()
         self._ant_hasta.setRange(1, 9999)
         self._ant_hasta.setValue(100)
         self._ant_hasta.setEnabled(False)
-        self._ant_hasta.setFixedWidth(55)
+        self._ant_hasta.setFixedWidth(78)
         rng_row.addWidget(self._ant_chk_range)
         rng_row.addWidget(QLabel("Desde:"))
         rng_row.addWidget(self._ant_desde)
@@ -618,38 +810,40 @@ class DocumentPage(QWidget):
         rng_row.addStretch()
         al.addLayout(rng_row)
 
-        # Groups list
-        self._ant_groups = QListWidget()
-        self._ant_groups.setFixedHeight(80)
-        self._ant_groups.setStyleSheet(COMPACT_LIST_QSS)
-        al.addWidget(self._ant_groups)
+        al.addSpacing(8)  # separa el filtro (rango) de las acciones de exportación
 
-        self._ant_groups_lbl = QLabel("0 grupos")
-        self._ant_groups_lbl.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none;")
-        al.addWidget(self._ant_groups_lbl)
+        self._btn_exp_civil = QPushButton("ZIP — un PDF por página (serial)")
+        self._btn_exp_civil.setProperty("primary", True)
+        self._btn_exp_civil.setFixedHeight(32)
+        self._btn_exp_civil.clicked.connect(self._do_export_civil)
+        al.addWidget(self._btn_exp_civil)
 
-        self._btn_exp_ant = QPushButton("ZIP — un PDF por grupo (serial)")
-        self._btn_exp_ant.setProperty("primary", True)
-        self._btn_exp_ant.setFixedHeight(30)
-        self._btn_exp_ant.clicked.connect(self._do_export_ant)
-        al.addWidget(self._btn_exp_ant)
+        self._btn_exp_civil_bm = QPushButton("ZIP — un PDF por página (marcador)")
+        self._btn_exp_civil_bm.setFixedHeight(32)
+        self._btn_exp_civil_bm.clicked.connect(self._do_export_civil_bookmark)
+        al.addWidget(self._btn_exp_civil_bm)
 
         self._btn_exp_ant_single = QPushButton("PDF único con marcadores")
-        self._btn_exp_ant_single.setFixedHeight(30)
+        self._btn_exp_ant_single.setFixedHeight(32)
         self._btn_exp_ant_single.clicked.connect(self._do_export_ant_single)
         al.addWidget(self._btn_exp_ant_single)
 
         self._btn_exp_ant_split = QPushButton("Varios PDFs por marcador")
-        self._btn_exp_ant_split.setFixedHeight(30)
+        self._btn_exp_ant_split.setFixedHeight(32)
         self._btn_exp_ant_split.clicked.connect(self._do_export_ant_split)
         al.addWidget(self._btn_exp_ant_split)
 
         self._btn_exp_ant_orig = QPushButton("Exportar PDF original")
-        self._btn_exp_ant_orig.setFixedHeight(30)
+        self._btn_exp_ant_orig.setFixedHeight(32)
         self._btn_exp_ant_orig.clicked.connect(self._do_export_original)
         al.addWidget(self._btn_exp_ant_orig)
 
-        v.addWidget(ant_grp)
+        self._btn_exp_merge = QPushButton("Unir PDFs externos…")
+        self._btn_exp_merge.setFixedHeight(32)
+        self._btn_exp_merge.clicked.connect(self._switch_merge_tab)
+        al.addWidget(self._btn_exp_merge)
+
+        v.addWidget(civil_grp)
         v.addStretch()
 
         scroll.setWidget(c)
@@ -664,7 +858,46 @@ class DocumentPage(QWidget):
         self._current_idx = index
         self._rot_angle = 0.0
         self._rot_slider.setValue(0)
+        self._update_viewer_current()
         self._refresh_info_tab()
+
+    def _update_viewer_current(self):
+        """Muestra en el visor central la página seleccionada. Antes el visor
+        solo se actualizaba al añadir páginas, no al cambiar de selección."""
+        from PySide6.QtWidgets import QApplication
+        mw = QApplication.instance().activeWindow()
+        if not mw or not hasattr(mw, '_model') or self._current_idx < 0:
+            return
+        page = mw._model.get(self._current_idx)
+        if page is not None:
+            self.viewer.set_image(page.display_image)
+
+    def _navigate_page(self, delta: int):
+        """Navegación con flechas ← / →: selecciona la página anterior/siguiente
+        por la misma vía que un clic en la miniatura, acotada a los extremos."""
+        n = self.grid.count
+        if n == 0:
+            return
+        # Sin selección previa, la primera flecha lleva a la página 0.
+        new = 0 if self._current_idx < 0 else max(0, min(self._current_idx + delta, n - 1))
+        if new == self._current_idx:
+            return
+        self.grid.select(new)
+        self._on_page_selected(new)
+        self.viewer.setFocus()
+
+    def keyPressEvent(self, event):
+        # Red de seguridad: si el foco está en la zona de página (no en un
+        # campo de texto/spin, que consumen las flechas), ← / → navegan.
+        if event.key() == Qt.Key_Left:
+            self._navigate_page(-1)
+            event.accept()
+            return
+        if event.key() == Qt.Key_Right:
+            self._navigate_page(1)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _refresh_info_tab(self):
         from PySide6.QtWidgets import QApplication
@@ -724,11 +957,6 @@ class DocumentPage(QWidget):
             item = QListWidgetItem(f"{prefix}{title}")
             item.setData(Qt.UserRole, (lvl, title))
             self._bm_list.addItem(item)
-
-    def _update_ant_preview(self):
-        pad = self._ant_pad.value()
-        ser = self._ant_serial.value()
-        self._ant_preview.setText(f"Ej: {str(ser).zfill(pad)}.pdf")
 
     def _toggle_ant_range(self, state: int):
         en = state == Qt.Checked
@@ -861,12 +1089,26 @@ class DocumentPage(QWidget):
         self._refresh_ocr_summary()
 
     def _ocr_selected(self):
-        row = self._ocr_table.currentRow()
-        if row < 0:
-            return
-        n_item = self._ocr_table.item(row, self.COL_NUM)
-        if n_item:
-            self.ocr_page_requested.emit(n_item.data(Qt.UserRole))
+        # Actúa sobre la página mostrada en la vista previa (miniatura/visor),
+        # no sobre una fila que haya que seleccionar aparte en la tabla OCR.
+        # _current_idx usa la misma convención de índice de página que el rol
+        # Qt.UserRole de COL_NUM (ver add_ocr_row / _ocr_row_for).
+        if self._current_idx >= 0:
+            idx = self._current_idx
+        else:
+            # Fallback: fila seleccionada en la tabla OCR (si no hay vista previa).
+            row = self._ocr_table.currentRow()
+            if row < 0:
+                return
+            n_item = self._ocr_table.item(row, self.COL_NUM)
+            if n_item is None:
+                return
+            idx = n_item.data(Qt.UserRole)
+        # Mantener la tabla OCR coherente con la vista previa.
+        tbl_row = self._ocr_row_for(idx)
+        if tbl_row >= 0:
+            self._ocr_table.selectRow(tbl_row)
+        self.ocr_page_requested.emit(idx)
 
     def _ocr_table_context_menu(self, pos):
         from PySide6.QtWidgets import QMenu
@@ -940,27 +1182,12 @@ class DocumentPage(QWidget):
         output = str(Path(folder) / "unificado.pdf")
         self.merge_requested.emit(pdfs, output)
 
-    def _do_export_ant(self):
-        f = self._export_get_folder()
-        if not f:
-            return
-        params = {
-            "folder": f,
-            "serial_ini": self._ant_serial.value(),
-            "padding": self._ant_pad.value(),
-            "desde": self._ant_desde.value() if self._ant_chk_range.isChecked() else 0,
-            "hasta": self._ant_hasta.value() if self._ant_chk_range.isChecked() else 0,
-        }
-        self.export_ant_requested.emit(params)
-
     def _do_export_ant_single(self):
         f = self._export_get_folder()
         if not f:
             return
         params = {
             "folder": f,
-            "serial_ini": self._ant_serial.value(),
-            "padding": self._ant_pad.value(),
             "desde": self._ant_desde.value() if self._ant_chk_range.isChecked() else 0,
             "hasta": self._ant_hasta.value() if self._ant_chk_range.isChecked() else 0,
         }
@@ -972,8 +1199,6 @@ class DocumentPage(QWidget):
             return
         params = {
             "folder": f,
-            "serial_ini": self._ant_serial.value(),
-            "padding": self._ant_pad.value(),
             "desde": self._ant_desde.value() if self._ant_chk_range.isChecked() else 0,
             "hasta": self._ant_hasta.value() if self._ant_chk_range.isChecked() else 0,
         }
@@ -992,6 +1217,14 @@ class DocumentPage(QWidget):
     # ═══════════════════════════════════════════════════════════════
     #  INTERNAL: Scan helpers
     # ═══════════════════════════════════════════════════════════════
+
+    def _show_scanner_tab(self):
+        """Escanear desde el estado vacío no dispara el escaneo directamente —
+        primero muestra la vista de trabajo en la pestaña Escáner para que el
+        usuario revise/ajuste el dispositivo y las opciones antes de escanear."""
+        self._empty.setVisible(False)
+        self._splitter.setVisible(True)
+        self._tabs.setCurrentWidget(self._scanner_tab)
 
     def _start_scan(self):
         settings = self.get_scan_settings()
@@ -1061,6 +1294,16 @@ class DocumentPage(QWidget):
         self._add_ocr_row(index, image)
         self._ocr_table.blockSignals(False)
         self._refresh_ocr_summary()
+        self._update_scanner_tab_visible()
+
+    def _update_scanner_tab_visible(self):
+        """La pestaña Escáner SIEMPRE está visible — tenga o no contenido el
+        documento (PDF/proyecto abierto o páginas escaneadas), el usuario debe
+        poder escanear/añadir páginas en cualquier momento. Este método solo
+        garantiza que la pestaña esté presente; nunca la oculta."""
+        if self._tabs.indexOf(self._scanner_tab) == -1:
+            self._tabs.insertTab(2, self._scanner_tab, _emoji_icon("🖨"), "")
+            self._tabs.setTabToolTip(2, "Escáner")
 
     def _add_ocr_row(self, index: int, image=None):
         row = self._ocr_table.rowCount()
@@ -1079,16 +1322,25 @@ class DocumentPage(QWidget):
         e.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         e.setForeground(QColor(TEXT_DIM))
         e.setFont(self._status_font)
-        bm = QTableWidgetItem("")
-        bm.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        cm = QTableWidgetItem("")
-        cm.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         self._ocr_table.setItem(row, self.COL_NUM, n)
         self._ocr_table.setItem(row, self.COL_SERIAL, s)
         self._ocr_table.setItem(row, self.COL_CONF, c)
         self._ocr_table.setItem(row, self.COL_STATUS, e)
-        self._ocr_table.setItem(row, self.COL_BOOKMARK, bm)
-        self._ocr_table.setItem(row, self.COL_COMMENT, cm)
+
+    def _ensure_ocr_cells(self, row: int):
+        """Garantiza que la fila tenga las celdas Serial/Confianza/Estado. Una
+        celda de QTableWidget puede ser None si nunca se pobló; sin esto los
+        setters (set_ocr_result/set_serial) lanzan AttributeError. COL_NUM está
+        garantizada por _ocr_row_for, que localiza la fila justamente por ella."""
+        for col, text in ((self.COL_SERIAL, "—"),
+                          (self.COL_CONF, "—"),
+                          (self.COL_STATUS, "Pendiente")):
+            if self._ocr_table.item(row, col) is None:
+                it = QTableWidgetItem(text)
+                it.setTextAlignment(Qt.AlignCenter)
+                if col != self.COL_SERIAL:  # Serial es editable
+                    it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                self._ocr_table.setItem(row, col, it)
 
     def remove_page(self, index: int):
         self.grid.remove_page(index)
@@ -1107,6 +1359,7 @@ class DocumentPage(QWidget):
             self._current_idx = -1
             self.viewer.set_image(None)
             self._refresh_info_tab()
+        self._update_scanner_tab_visible()
 
     def update_page(self, index: int, image):
         self.grid.update_image(index, image)
@@ -1130,43 +1383,52 @@ class DocumentPage(QWidget):
         self.grid.set_serial(index, serial, conf)
         row = self._ocr_row_for(index)
         if row >= 0:
-            self._ocr_table.blockSignals(True)
-            self._ocr_table.item(row, self.COL_SERIAL).setText(serial or "Sin serial")
-            self._ocr_table.item(row, self.COL_CONF).setText(f"{conf:.0%}" if conf > 0 else "—")
-            e = self._ocr_table.item(row, self.COL_STATUS)
-            e.setFont(self._status_font)
-            if serial:
-                c = SUCCESS if conf >= 0.7 else WARNING
-                e.setText("OK" if conf >= 0.7 else "Baja confianza")
-                e.setForeground(QColor(c))
-                self._ocr_table.item(row, self.COL_SERIAL).setForeground(QColor(c))
-            else:
-                e.setText("Sin serial")
-                e.setForeground(QColor(DANGER))
-                self._ocr_table.item(row, self.COL_SERIAL).setForeground(QColor(DANGER))
-            self._ocr_table.blockSignals(False)
+            self._apply_ocr_row(row, serial, conf)
             self._refresh_ocr_summary()
         if index == self._current_idx:
             self._refresh_info_tab()
 
+    def _apply_ocr_row(self, row: int, serial: str, conf: float):
+        """Escribe serial/confianza/estado en una fila de la tabla OCR de forma
+        segura ante celdas None y preservando el estado de bloqueo de señales
+        (no lo desbloquea si el llamador —p.ej. rebuild— lo tenía bloqueado)."""
+        self._ensure_ocr_cells(row)
+        prev_blocked = self._ocr_table.signalsBlocked()
+        self._ocr_table.blockSignals(True)
+        s_item = self._ocr_table.item(row, self.COL_SERIAL)
+        c_item = self._ocr_table.item(row, self.COL_CONF)
+        e_item = self._ocr_table.item(row, self.COL_STATUS)
+        s_item.setText(serial or "Sin serial")
+        c_item.setText(f"{conf:.0%}" if conf > 0 else "—")
+        e_item.setFont(self._status_font)
+        if serial:
+            c = SUCCESS if conf >= 0.7 else WARNING
+            e_item.setText("OK" if conf >= 0.7 else "Baja confianza")
+            e_item.setForeground(QColor(c))
+            s_item.setForeground(QColor(c))
+        else:
+            e_item.setText("Sin serial")
+            e_item.setForeground(QColor(DANGER))
+            s_item.setForeground(QColor(DANGER))
+        self._ocr_table.blockSignals(prev_blocked)
+
     def set_bookmark(self, index: int, display: str):
+        # El marcador ya no se muestra en la tabla OCR; se refleja en la
+        # miniatura y en la pestaña Info.
         self.grid.set_bookmark(index, display)
-        row = self._ocr_row_for(index)
-        if row >= 0:
-            self._ocr_table.blockSignals(True)
-            self._ocr_table.item(row, self.COL_BOOKMARK).setText(display)
-            self._ocr_table.blockSignals(False)
         if index == self._current_idx:
             self._refresh_info_tab()
 
     def set_comment(self, index: int, display: str):
-        row = self._ocr_row_for(index)
-        if row >= 0:
-            self._ocr_table.blockSignals(True)
-            self._ocr_table.item(row, self.COL_COMMENT).setText(display)
-            self._ocr_table.blockSignals(False)
+        # El comentario ya no se muestra en la tabla OCR; se refleja en la
+        # pestaña Info (el dato vive en PageData).
+        if index == self._current_idx:
+            self._refresh_info_tab()
 
     def rebuild(self, pages_data: list, progress_callback=None):
+        # Recordar la página vista para restaurarla al final: reconstruir NO
+        # debe saltar siempre a la página 1.
+        prev_idx = self._current_idx
         self.grid.blockSignals(True)
         self.grid.clear_all()
         self._ocr_table.blockSignals(True)
@@ -1188,14 +1450,6 @@ class DocumentPage(QWidget):
             self._add_ocr_row(pd.index, pd.display_image)
             if pd.serial:
                 self.set_ocr_result(pd.index, pd.serial, pd.serial_confidence)
-            if pd.bookmark:
-                bm_display = pd.bookmarks[0][1] if pd.bookmarks else pd.bookmark
-                n = len(pd.bookmarks)
-                display = f"{bm_display} 📑{n}" if n > 1 else bm_display
-                self._ocr_table.item(self._ocr_table.rowCount() - 1, self.COL_BOOKMARK).setText(display)
-            if pd.comment:
-                preview = pd.comment[:40] + "…" if len(pd.comment) > 40 else pd.comment
-                self._ocr_table.item(self._ocr_table.rowCount() - 1, self.COL_COMMENT).setText(preview)
             if progress_callback:
                 progress_callback(i + 1, total)
         self._ocr_table.blockSignals(False)
@@ -1203,6 +1457,13 @@ class DocumentPage(QWidget):
         if pages_data:
             self._empty.setVisible(False)
             self._splitter.setVisible(True)
+            # Restaurar la selección previa (acotada), no la página 0. Si no
+            # había selección previa, mostrar la primera por defecto.
+            restore = prev_idx if prev_idx >= 0 else 0
+            restore = max(0, min(restore, len(pages_data) - 1))
+            self._current_idx = restore
+            self.grid.select(restore)
+            self.viewer.set_image(pages_data[restore].display_image)
         else:
             self._empty.setVisible(True)
             self._splitter.setVisible(False)
@@ -1210,26 +1471,13 @@ class DocumentPage(QWidget):
             self.viewer.set_image(None)
         self.grid.blockSignals(False)
         self._refresh_info_tab()
+        self._update_scanner_tab_visible()
 
     def set_ocr_result(self, index: int, serial: str, conf: float):
         row = self._ocr_row_for(index)
         if row < 0:
             return
-        self._ocr_table.blockSignals(True)
-        self._ocr_table.item(row, self.COL_SERIAL).setText(serial or "Sin serial")
-        self._ocr_table.item(row, self.COL_CONF).setText(f"{conf:.0%}" if conf > 0 else "—")
-        e = self._ocr_table.item(row, self.COL_STATUS)
-        e.setFont(self._status_font)
-        if serial:
-            c = SUCCESS if conf >= 0.7 else WARNING
-            e.setText("OK" if conf >= 0.7 else "Baja confianza")
-            e.setForeground(QColor(c))
-            self._ocr_table.item(row, self.COL_SERIAL).setForeground(QColor(c))
-        else:
-            e.setText("Sin serial")
-            e.setForeground(QColor(DANGER))
-            self._ocr_table.item(row, self.COL_SERIAL).setForeground(QColor(DANGER))
-        self._ocr_table.blockSignals(False)
+        self._apply_ocr_row(row, serial, conf)
         self._refresh_ocr_summary()
         if index == self._current_idx:
             self._refresh_info_tab()
@@ -1241,15 +1489,6 @@ class DocumentPage(QWidget):
     def ocr_finished(self):
         self._ocr_prog.setVisible(False)
 
-    def update_groups(self, groups: list[list[int]]):
-        self._ant_groups.clear()
-        serial = self._ant_serial.value()
-        padding = self._ant_pad.value()
-        for i, group in enumerate(groups):
-            label = f"Grupo {i+1}  [{len(group)} pág.]  → {str(serial + i).zfill(padding)}.pdf"
-            self._ant_groups.addItem(QListWidgetItem(label))
-        self._ant_groups_lbl.setText(f"{len(groups)} grupo(s)")
-
     def set_parallel_workers(self, n: int):
         self._ocr_cores_spin.blockSignals(True)
         self._ocr_cores_spin.setValue(n)
@@ -1258,21 +1497,18 @@ class DocumentPage(QWidget):
     def clear(self):
         self.grid.clear_all()
         self._ocr_table.setRowCount(0)
-        self._ant_groups.clear()
-        self._ant_groups_lbl.setText("0 grupos")
         self._current_idx = -1
         self.viewer.set_image(None)
         self._empty.setVisible(True)
         self._splitter.setVisible(False)
         self._rot_slider.setValue(0)
         self._export_folder.clear()
-        self._ant_serial.setValue(1)
-        self._ant_pad.setValue(5)
         self._ant_chk_range.setChecked(False)
         self._ant_desde.setValue(1)
         self._ant_hasta.setValue(100)
         self._refresh_ocr_summary()
         self._refresh_info_tab()
+        self._update_scanner_tab_visible()
 
     # ── Export method stubs (for MainWindow feedback) ──
 
@@ -1322,16 +1558,16 @@ class DocumentPage(QWidget):
         self._btn_exp_ant_split.setText("  Varios PDFs por marcador")
 
     def export_original_started(self):
-        self._btn_exp_orig.setEnabled(False)
-        self._btn_exp_orig.setText("Generando…")
+        self._btn_exp_ant_orig.setEnabled(False)
+        self._btn_exp_ant_orig.setText("Generando…")
 
     def export_original_finished(self, path: str):
-        self._btn_exp_orig.setEnabled(True)
-        self._btn_exp_orig.setText("  PDF original (imágenes + comentarios)")
+        self._btn_exp_ant_orig.setEnabled(True)
+        self._btn_exp_ant_orig.setText("Exportar PDF original")
 
     def export_original_error(self, msg: str):
-        self._btn_exp_orig.setEnabled(True)
-        self._btn_exp_orig.setText("  PDF original (imágenes + comentarios)")
+        self._btn_exp_ant_orig.setEnabled(True)
+        self._btn_exp_ant_orig.setText("Exportar PDF original")
 
     def merge_started(self):
         pass
@@ -1384,8 +1620,8 @@ class DocumentPage(QWidget):
 
     def _set_export_buttons(self, enabled: bool, text: str | None = None):
         btns = [
-            self._btn_exp_civil, self._btn_exp_civil_bm, self._btn_exp_orig,
-            self._btn_exp_ant, self._btn_exp_ant_single, self._btn_exp_ant_split,
+            self._btn_exp_civil, self._btn_exp_civil_bm,
+            self._btn_exp_ant_single, self._btn_exp_ant_split,
             self._btn_exp_ant_orig,
         ]
         for b in btns:
