@@ -225,15 +225,22 @@ class _TwainScan:
     def cancel(self):
         self._stop = True
 
+    NO_SCANNER_MSG = ("No se detectó ningún escáner. Conectá un dispositivo TWAIN "
+                      "(por ejemplo, por USB) y volvé a intentar.")
+
     def run(self):
         if not _TWAIN_AVAILABLE:
-            self.s.error.emit("pytwain no está disponible en este equipo.")
+            self.s.error.emit(self.NO_SCANNER_MSG)
             return
         try:
             with twain.SourceManager(self.parent_hwnd or None) as sm:
+                if not list(sm.source_list):
+                    self.s.error.emit(self.NO_SCANNER_MSG)
+                    return
                 src = sm.open_source(self.settings.device_name or None)
                 if src is None:
-                    self.s.error.emit("No se pudo abrir el escáner seleccionado.")
+                    self.s.error.emit("No se pudo abrir el escáner seleccionado. "
+                                     "Verificá que esté encendido y conectado.")
                     return
                 with src:
                     self._configure(src)
@@ -266,7 +273,17 @@ class _TwainScan:
             self.s.done.emit()
         except Exception as e:
             logger.exception("Error durante el escaneo TWAIN")
-            self.s.error.emit(str(e))
+            self.s.error.emit(self._friendly_error(e))
+
+    _NO_DRIVER_EXCEPTIONS = (
+        "SMLoadFileFailed", "SMOpenFailed", "SMGetProcAddressFailed",
+        "NoDataSourceError",
+    )
+
+    def _friendly_error(self, e: Exception) -> str:
+        if type(e).__name__ in self._NO_DRIVER_EXCEPTIONS:
+            return self.NO_SCANNER_MSG
+        return f"Error del escáner: {e}"
 
     def _configure(self, src):
         dpi = float(self.settings.dpi)
@@ -305,6 +322,7 @@ class ScanController(QObject):
     bookmark_updated = Signal(int, list)
     scan_progress    = Signal(int)
     scan_done        = Signal()
+    scan_error       = Signal(str)
 
     def __init__(self, model: ScanModel, config: ConfigModel, parent=None):
         super().__init__(parent)
@@ -352,7 +370,7 @@ class ScanController(QObject):
         w.s.page.connect(self._on_scan_page_src)
         w.s.count.connect(self.scan_progress)
         w.s.done.connect(self.scan_done)
-        w.s.error.connect(self.error)
+        w.s.error.connect(self.scan_error)
         self._scan_w = w
         w.run()
 
