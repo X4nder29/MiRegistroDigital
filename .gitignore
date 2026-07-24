@@ -23,6 +23,10 @@ Thumbs.db
 
 # Project specific
 installer/output/
+# Guía de usuario generada por docs/build_guide.py (regenerable, ~23 MB)
+docs/Guia_de_Usuario.pdf
+# PDFs de prueba sueltos generados al verificar exportación/TOC/escalado
+scratch_*.pdf
 
 # opencode workspace
 .opencode/
