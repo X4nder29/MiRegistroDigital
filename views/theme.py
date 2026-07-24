@@ -1,4 +1,7 @@
 """Paleta oscura estilo Vercel/GitHub — minimal, limpia, moderna."""
+import sys
+from pathlib import Path
+
 from PySide6.QtGui import QColor, QPalette, QFont
 from PySide6.QtWidgets import QApplication
 
@@ -40,6 +43,83 @@ def pill_qss(color: str) -> str:
         f"font-size: 8pt;"
         f"font-weight: 600;"
     )
+
+
+def _resource_dir() -> Path:
+    """Carpeta `resources/` tanto en desarrollo como en el .exe de PyInstaller."""
+    base = getattr(sys, "_MEIPASS", None)
+    root = Path(base) if base else Path(__file__).resolve().parent.parent
+    return root / "resources"
+
+
+_RES = _resource_dir()
+_CHEVRONS = ("chevron_up.svg", "chevron_down.svg",
+             "chevron_up_dim.svg", "chevron_down_dim.svg")
+
+
+def _chevron_url(name: str) -> str:
+    return f'url("{(_RES / name).as_posix()}")'
+
+
+# Ancho de la columna de los botones +/- del QSpinBox. Estrecha a propósito:
+# varios spinboxes de la app miden solo 55-80 px y el número es el contenido,
+# los steppers son secundarios.
+_STEPPER_W = 18
+
+# Estilo de los botones de incremento/decremento de TODOS los campos numéricos.
+# Qt deja de dibujar la flecha nativa en cuanto se aplica cualquier regla a
+# ::up-button, así que las flechas son SVG propios (probado: el truco CSS del
+# triángulo con bordes se dibuja como un rectángulo en Qt, no como flecha).
+# Si los SVG faltasen, se deja el render nativo en vez de un botón sin flecha.
+if all((_RES / n).exists() for n in _CHEVRONS):
+    _SPINBOX_STEPPER_QSS = f"""
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    background: transparent;
+    border: none;
+    border-left: 1px solid {BORDER};
+    width: {_STEPPER_W}px;
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-position: top right;
+    margin: 1px 1px 0 0;
+    border-top-right-radius: 5px;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-position: bottom right;
+    margin: 0 1px 1px 0;
+    border-bottom-right-radius: 5px;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {SURFACE3};
+}}
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed,
+QDoubleSpinBox::up-button:pressed, QDoubleSpinBox::down-button:pressed {{
+    background: #2a2a2e;
+}}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: {_chevron_url("chevron_up.svg")};
+    width: 10px;
+    height: 6px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: {_chevron_url("chevron_down.svg")};
+    width: 10px;
+    height: 6px;
+}}
+QSpinBox::up-arrow:off, QSpinBox::up-arrow:disabled,
+QDoubleSpinBox::up-arrow:off, QDoubleSpinBox::up-arrow:disabled {{
+    image: {_chevron_url("chevron_up_dim.svg")};
+}}
+QSpinBox::down-arrow:off, QSpinBox::down-arrow:disabled,
+QDoubleSpinBox::down-arrow:off, QDoubleSpinBox::down-arrow:disabled {{
+    image: {_chevron_url("chevron_down_dim.svg")};
+}}
+"""
+else:
+    _SPINBOX_STEPPER_QSS = ""
 
 
 COMPACT_LIST_QSS = f"""
@@ -155,7 +235,9 @@ QSpinBox, QDoubleSpinBox, QComboBox {{
     min-height: 26px;
     selection-background-color: {SURFACE3};
 }}
-QSpinBox:focus, QComboBox:focus {{
+/* Sin padding-right: Qt ya descuenta el ancho de los botones del área de
+   texto. Añadirlo aquí lo restaría dos veces y recortaría el número. */
+QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border-color: {INFO};
 }}
 QComboBox::drop-down {{
@@ -243,15 +325,20 @@ QGroupBox {{
     border: 1px solid {BORDER};
     border-radius: 8px;
     background-color: {SURFACE};
-    margin-top: 12px;
-    padding: 16px;
+    /* Margen amplio arriba: separa el título del contenido anterior y le da
+       aire al nombre de la isla; padding generoso para que las opciones no
+       queden pegadas al borde ni al título. */
+    margin-top: 22px;
+    padding: 20px 18px 18px 18px;
     font-size: 9pt;
     color: {TEXT_SEC};
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
+    subcontrol-position: top left;
     left: 16px;
-    padding: 0;
+    padding: 2px 8px;
+    font-weight: 600;
 }}
 
 QProgressBar {{
@@ -269,6 +356,7 @@ QProgressBar::chunk {{
 QCheckBox {{
     spacing: 8px;
     color: {TEXT};
+    background: transparent;
 }}
 QCheckBox::indicator {{
     width: 16px;
@@ -354,4 +442,4 @@ QMenu::separator {{
     height: 1px;
     margin: 4px 8px;
 }}
-"""
+""" + _SPINBOX_STEPPER_QSS
