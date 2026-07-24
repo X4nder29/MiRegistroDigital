@@ -67,11 +67,28 @@ def main():
     else:
         logger.warning("Font JetBrainsMono NF no encontrado en %s", font_path)
 
-    # ── Icono de aplicación ─────────────────────────────────────────
-    icon_path = base / "resources" / "app_icon.svg"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
-        logger.info("Icono de aplicación cargado")
+    # ── Icono de aplicación (incluye taskbar de Windows) ────────────
+    # En Windows el taskbar usa el icono del lanzador (python.exe) salvo que se
+    # fije un AppUserModelID propio ANTES de mostrar cualquier ventana.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "MiRegistroDigital.App")
+        except Exception:
+            logger.warning("No se pudo fijar AppUserModelID", exc_info=True)
+
+    # Preferir .ico: incrusta tamaños ráster reales que el taskbar necesita; un
+    # QIcon a partir de SVG a menudo no produce icono de taskbar. Fallback a
+    # svg/png si el .ico no está.
+    for name in ("app_icon.ico", "app_icon.svg", "app_icon.png"):
+        icon_path = base / "resources" / name
+        if icon_path.exists():
+            app_icon = QIcon(str(icon_path))
+            if not app_icon.isNull():
+                app.setWindowIcon(app_icon)
+                logger.info("Icono de aplicación cargado: %s", name)
+                break
 
     apply_palette(app)
     app.setStyleSheet(STYLESHEET)
