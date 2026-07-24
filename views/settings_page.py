@@ -28,7 +28,10 @@ class SettingsPage(QWidget):
 
         header = QFrame()
         header.setFixedHeight(50)
-        header.setStyleSheet(f"background:{SURFACE}; border:none;")
+        # Selector por id: una regla sin selector se propaga a los hijos y pisa
+        # la hoja global, dejando el botón "Guardar" sin relleno ni borde.
+        header.setObjectName("settingsHeader")
+        header.setStyleSheet(f"#settingsHeader {{ background:{SURFACE}; border:none; }}")
         hl = QHBoxLayout(header)
         hl.setContentsMargins(20, 0, 20, 0)
         title = QLabel("Configuración")

@@ -562,7 +562,9 @@ class MainWindow(QMainWindow):
     def _build_top_bar(self, menu_bar) -> QFrame:
         bar = QFrame()
         bar.setFixedHeight(48)
-        bar.setStyleSheet(f"background:{BG}; border-bottom: 1px solid {BORDER};")
+        bar.setObjectName("topBar")
+        bar.setStyleSheet(
+            f"#topBar {{ background:{BG}; border-bottom: 1px solid {BORDER}; }}")
         h = QHBoxLayout(bar)
         h.setContentsMargins(16, 0, 16, 0)
         h.setSpacing(4)

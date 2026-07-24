@@ -95,7 +95,8 @@ class VisualizationPage(QWidget):
     def _build_header(self) -> QFrame:
         header = QFrame()
         header.setFixedHeight(56)
-        header.setStyleSheet(f"background:{SURFACE}; border:none;")
+        header.setObjectName("vizHeader")
+        header.setStyleSheet(f"#vizHeader {{ background:{SURFACE}; border:none; }}")
         hl = QHBoxLayout(header)
         hl.setContentsMargins(20, 0, 20, 0)
         hl.setSpacing(10)

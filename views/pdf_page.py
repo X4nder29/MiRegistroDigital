@@ -198,26 +198,34 @@ class OrganizeWidget(QWidget):
         main.setSpacing(0)
 
         left_panel = QWidget()
-        left_panel.setStyleSheet(f"background:{BG};")
+        left_panel.setObjectName("pdfLeftPanel")
+        left_panel.setStyleSheet(f"#pdfLeftPanel {{ background:{BG}; }}")
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
 
         toolbar = QFrame()
         toolbar.setFixedHeight(44)
-        toolbar.setStyleSheet(f"background:{BG}; border:none;")
+        toolbar.setObjectName("pdfToolbar")
+        toolbar.setStyleSheet(f"#pdfToolbar {{ background:{BG}; border:none; }}")
         tb = QHBoxLayout(toolbar)
         tb.setContentsMargins(16, 6, 16, 6)
 
+        # 32 px: altura de botón de acción en barra, igual que en el resto de
+        # la app. Sin fijarla el botón mide 42 px y no entra en los 32 px
+        # útiles de esta barra de 44 px, quedando recortado por arriba.
         self._btn_load = QPushButton("Cargar PDFs")
+        self._btn_load.setFixedHeight(32)
         self._btn_load.clicked.connect(self._load_pdfs)
 
         self._btn_clear = QPushButton("Limpiar")
         self._btn_clear.setProperty("danger", True)
+        self._btn_clear.setFixedHeight(32)
         self._btn_clear.clicked.connect(self._clear_all)
 
         self._btn_generate = QPushButton("Generar PDF")
         self._btn_generate.setProperty("primary", True)
+        self._btn_generate.setFixedHeight(32)
         self._btn_generate.clicked.connect(self._generate_pdf)
         self._btn_generate.setEnabled(False)
 

@@ -64,7 +64,8 @@ class HomePage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(f"background-color:{BG};")
+        self.setObjectName("homeRoot")
+        self.setStyleSheet(f"#homeRoot {{ background-color:{BG}; }}")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
