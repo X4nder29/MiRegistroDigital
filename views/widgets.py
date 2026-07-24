@@ -965,6 +965,10 @@ class ThumbnailGrid(QListView):
         self.setSpacing(8)
         self.setMovement(QListView.Static)
 
+        # Sin marco propio: la lista llena su panel y su borde se sumaba al del
+        # contenedor, dibujando un doble marco con esquinas redondeadas dentro.
+        self.setFrameShape(QFrame.NoFrame)
+
         self.setSelectionMode(QAbstractItemView.NoSelection)
         self.setDragDropMode(QAbstractItemView.NoDragDrop)
         self.setAcceptDrops(True)
