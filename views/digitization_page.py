@@ -8,12 +8,11 @@ from PySide6.QtWidgets import (
     QSlider, QTabWidget, QGroupBox, QSpinBox, QFormLayout,
     QCheckBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QMessageBox, QListWidget,
-    QListWidgetItem, QPlainTextEdit, QScrollArea, QComboBox,
+    QListWidgetItem, QPlainTextEdit, QScrollArea, QComboBox, QTabBar,
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import (
     QColor, QFont, QKeySequence, QShortcut, QIcon, QPixmap, QPainter,
-    QTransform,
 )
 
 from views.widgets import ThumbnailGrid, ImageViewer
@@ -26,9 +25,82 @@ from views.theme import (
 )
 
 
+class VerticalTabBar(QTabBar):
+    """Tira de pestañas West con celdas cuadradas y el icono EXACTAMENTE centrado.
+
+    Por qué se pinta a mano en vez de con QSS: en posición West, Qt reserva
+    dentro de la pestaña el hueco del texto aunque la etiqueta esté vacía y
+    aplica la caja QSS rotada. Medido sobre la app real, eso deja ~16px
+    fantasma en la parte superior de cada celda:
+
+        hueco_arriba = padding-top + 16
+        hueco_abajo  = padding-bottom
+        alto_celda   = icono + padding-top + padding-bottom + 16
+
+    Para una celda de 48px hace falta padding-top + padding-bottom = 10, y para
+    centrar hace falta padding-bottom - padding-top = 16.4; el sistema da
+    padding-top = -3.2px. Es decir: NINGÚN valor de padding centra el icono en
+    una celda cuadrada. Pintando la celda aquí, el icono se coloca con
+    aritmética entera y queda centrado al píxel en ambos ejes.
+    """
+
+
+    def __init__(self, side: int, parent=None):
+        super().__init__(parent)
+        self._side = side
+        self._hover = -1
+        self.setDrawBase(False)
+        self.setExpanding(False)
+        self.setMouseTracking(True)
+
+    def tabSizeHint(self, index: int) -> QSize:
+        return QSize(self._side, self._side)
+
+    def mouseMoveEvent(self, event):
+        idx = self.tabAt(event.position().toPoint())
+        if idx != self._hover:
+            self._hover = idx
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        if self._hover != -1:
+            self._hover = -1
+            self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        # UNA sola banda continua: la celda de pestaña NO pinta fondo propio y
+        # todos los iconos van a opacidad plena. Cualquier relleno por celda
+        # (BG antes, SURFACE3 después) se lee como un bloque pegado encima de
+        # la tira, y atenuar los iconos inactivos los deja apagados. El único
+        # marcador de estado es el indicador de 3px.
+        p.fillRect(self.rect(), QColor(SURFACE2))
+        icon_size = self.iconSize()
+        for i in range(self.count()):
+            r = self.tabRect(i)
+            selected = (i == self.currentIndex())
+            if selected:  # indicador de 3px pegado al panel
+                p.fillRect(r.right() - 2, r.y(), 3, r.height(), QColor(ACCENT2))
+            icon = self.tabIcon(i)
+            if not icon.isNull():
+                # Centrado entero explícito: QRect.center() de un rect de lado
+                # par cae medio píxel a la izquierda y desplazaría el icono 1px.
+                x = r.x() + (r.width() - icon_size.width()) // 2
+                y = r.y() + (r.height() - icon_size.height()) // 2
+                icon.paint(p, x, y, icon_size.width(), icon_size.height(),
+                           Qt.AlignCenter, QIcon.Normal)
+        p.end()
+
+
 def _emoji_icon(emoji: str, size: int = 20) -> QIcon:
-    """Renderiza un emoji a un QIcon, rotado 90° para orientarlo correctamente
-    en la barra de pestañas West (barra lateral izquierda)."""
+    """Renderiza un emoji a un QIcon, sin rotar.
+
+    Antes se pre-rotaba 90° para compensar la rotación que Qt aplica al
+    contenido de una pestaña West. VerticalTabBar pinta el icono directamente
+    con QPainter, sin rotación, así que pre-rotarlo lo dejaría tumbado.
+    """
     box = size + 10
     pm = QPixmap(box, box)
     pm.fill(Qt.transparent)
@@ -39,7 +111,6 @@ def _emoji_icon(emoji: str, size: int = 20) -> QIcon:
     p.setFont(f)
     p.drawText(pm.rect(), Qt.AlignCenter, emoji)
     p.end()
-    pm = pm.transformed(QTransform().rotate(90), Qt.SmoothTransformation)
     return QIcon(pm)
 
 
@@ -201,7 +272,7 @@ class DigitizationPage(QWidget):
         btn.clicked.connect(self._open_pdf)
         btn_row.addWidget(btn)
 
-        self._btn_scan = QPushButton("🖨  Escanear")
+        self._btn_scan = QPushButton("Escanear")
         self._btn_scan.setFixedHeight(36)
         self._btn_scan.setFixedWidth(190)
         self._btn_scan.setFocusPolicy(Qt.NoFocus)
@@ -263,11 +334,22 @@ class DigitizationPage(QWidget):
         # Sin tope superior de ancho: el usuario puede expandir el panel derecho
         # con el divisor tanto como permitan los mínimos del visor/panel izquierdo.
         panel.setMinimumWidth(300)
+        # La banda de la tira se pinta AQUÍ, en el panel, que es la capa de más
+        # abajo y siempre pinta su fondo. Antes se confiaba en
+        # `QTabWidget { background: SURFACE2 }`, pero un QTabWidget solo dibuja
+        # el pane y la barra de pestañas: la parte de la tira que queda por
+        # debajo de la última pestaña no la pintaba nadie y caía a la regla
+        # global `QWidget { background-color: BG }`, dejando la tira en dos
+        # tonos (clara arriba, oscura abajo). Encima, el pane pinta BG sobre
+        # toda el área de contenido, así que solo queda visible la columna.
+        panel.setObjectName("digitRightPanel")
+        panel.setStyleSheet(f"#digitRightPanel {{ background: {SURFACE2}; }}")
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
         self._tabs = QTabWidget()
+        self._tabs.setTabBar(VerticalTabBar(self._TAB_STRIP_W))
         self._tabs.setTabPosition(QTabWidget.West)
         self._tabs.setIconSize(QSize(22, 22))
         # Banda contrastante a lo alto de todo el panel: el fondo del QTabWidget
@@ -275,31 +357,17 @@ class DigitizationPage(QWidget):
         # contenido (pane) pinta BG encima — así la tira de pestañas lee como
         # una franja distinta de arriba a abajo, no solo detrás de cada botón.
         self._tabs.setStyleSheet(f"""
-            QTabWidget {{ background: {SURFACE2}; }}
+            /* transparent, no SURFACE2: la banda la pinta #digitRightPanel por
+               debajo. Un QTabWidget no pinta de forma fiable su propio fondo. */
+            QTabWidget {{ background: transparent; }}
             QTabWidget::pane {{
                 border: none; border-left: 1px solid {BORDER}; background: {BG};
             }}
-            QTabBar {{ background: transparent; }}
-            QTabBar::tab {{
-                background: transparent; color: {TEXT_DIM};
-                border: none;
-                /* Celdas CUADRADAS (~{self._TAB_STRIP_W}px de lado): el ancho de
-                   contenido (min-width) + el indicador de 3px = ancho de tira;
-                   el padding vertical iguala la altura al ancho. El indicador de
-                   selección se reserva en TODOS los estados (transparent) para
-                   que el icono no se desplace ni la celda cambie de tamaño. */
-                border-right: 3px solid transparent;
-                padding: 5px 0px;
-                min-width: {self._TAB_STRIP_W - 3}px;
-                min-height: 22px;
-            }}
-            QTabBar::tab:selected {{
-                color: {TEXT}; background: {BG};
-                border-right: 3px solid {ACCENT2};
-            }}
-            QTabBar::tab:hover:!selected {{
-                background: {SURFACE3};
-            }}
+            QTabBar {{ background: {SURFACE2}; }}
+            /* Las celdas de pestaña las pinta VerticalTabBar.paintEvent (fondo,
+               indicador de selección, hover e icono centrado). No se estilan
+               aquí con QTabBar::tab a propósito: la caja QSS en posición West
+               no permite centrar el icono — ver el docstring de VerticalTabBar. */
         """)
 
         # Iconos (emoji rasterizados a QIcon) en vez de texto — con 5 pestañas,
@@ -430,6 +498,7 @@ class DigitizationPage(QWidget):
         sv.addSpacing(8)  # separa la lectura (serial) de la acción (corregir)
         self._btn_override = QPushButton("Corregir serial…")
         self._btn_override.setFixedHeight(32)
+        self._btn_override.setProperty("align", "left")
         self._btn_override.clicked.connect(self._info_override_serial)
         sv.addWidget(self._btn_override)
         v.addWidget(serial_grp)
@@ -478,6 +547,7 @@ class DigitizationPage(QWidget):
         # Clear cuts
         btn_clear_cuts = QPushButton("Limpiar todos los cortes")
         btn_clear_cuts.setFixedHeight(32)
+        btn_clear_cuts.setProperty("align", "left")
         btn_clear_cuts.clicked.connect(self.clear_cuts_requested)
         v.addWidget(btn_clear_cuts)
 
@@ -529,13 +599,15 @@ class DigitizationPage(QWidget):
 
         self._btn_auto = QPushButton("Auto corrección (perspectiva + deskew)")
         self._btn_auto.setProperty("primary", True)
-        self._btn_auto.setFixedHeight(34)
+        self._btn_auto.setFixedHeight(32)
+        self._btn_auto.setProperty("align", "left")
         self._btn_auto.clicked.connect(self._on_auto_correct)
         v.addWidget(self._btn_auto)
 
         self._btn_reset = QPushButton("Restablecer original")
         self._btn_reset.setProperty("danger", True)
-        self._btn_reset.setFixedHeight(34)
+        self._btn_reset.setFixedHeight(32)
+        self._btn_reset.setProperty("align", "left")
         self._btn_reset.clicked.connect(self._on_reset_correction)
         v.addWidget(self._btn_reset)
 
@@ -613,15 +685,17 @@ class DigitizationPage(QWidget):
 
         # Actualizar escáneres — acción secundaria prominente (antes solo un
         # icono 🔄 diminuto junto al combo). Reusa scan_sources_refresh_requested.
-        self._btn_scan_refresh = QPushButton("🔄  Actualizar escáneres")
+        self._btn_scan_refresh = QPushButton("Actualizar escáneres")
         self._btn_scan_refresh.setFixedHeight(32)
+        self._btn_scan_refresh.setProperty("align", "left")
         self._btn_scan_refresh.setToolTip("Volver a detectar los dispositivos TWAIN conectados")
         self._btn_scan_refresh.clicked.connect(self.scan_sources_refresh_requested)
         v.addWidget(self._btn_scan_refresh)
 
-        self._btn_scan_tab = QPushButton("🖨  Escanear")
+        self._btn_scan_tab = QPushButton("Escanear")
         self._btn_scan_tab.setProperty("primary", True)
-        self._btn_scan_tab.setFixedHeight(34)
+        self._btn_scan_tab.setFixedHeight(32)
+        self._btn_scan_tab.setProperty("align", "left")
         self._btn_scan_tab.clicked.connect(self._start_scan)
         v.addWidget(self._btn_scan_tab)
 
@@ -630,6 +704,7 @@ class DigitizationPage(QWidget):
         self._btn_scan_cancel = QPushButton("Cancelar escaneo")
         self._btn_scan_cancel.setProperty("danger", True)
         self._btn_scan_cancel.setFixedHeight(32)
+        self._btn_scan_cancel.setProperty("align", "left")
         self._btn_scan_cancel.setVisible(False)
         self._btn_scan_cancel.setStyleSheet(f"""
             QPushButton {{
@@ -673,10 +748,16 @@ class DigitizationPage(QWidget):
         # Table
         self._ocr_table = QTableWidget(0, 4)
         self._ocr_table.setHorizontalHeaderLabels(
-            ["Página", "Serial OCR", "Confianza", "Estado"])
+            ["#", "Serial OCR", "Confianza", "Estado"])
+        # La tabla ocupa todo el panel: sin borde ni esquinas redondeadas
+        # propias, que se sumaban al borde del panel y dibujaban un doble marco.
+        self._ocr_table.setObjectName("ocrTable")
+        self._ocr_table.setStyleSheet(
+            "#ocrTable { border: none; border-radius: 0; }")
+        self._ocr_table.setFrameShape(QFrame.NoFrame)
         self._ocr_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._ocr_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self._ocr_table.setColumnWidth(0, 55)
+        self._ocr_table.setColumnWidth(0, 42)
         self._ocr_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._ocr_table.setEditTriggers(
             QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
@@ -687,13 +768,20 @@ class DigitizationPage(QWidget):
         self._ocr_table.itemChanged.connect(self._ocr_on_item_changed)
         v.addWidget(self._ocr_table, 1)
 
-        # Bottom row
+        # Bottom row — en dos filas (estado arriba, acciones abajo). En una sola
+        # fila necesitaba 481 px y el panel puede estrecharse hasta 300, así que
+        # las etiquetas de los botones se recortaban a "a(", "p:", "t l".
         bottom = QFrame()
-        bottom.setFixedHeight(50)
-        bottom.setStyleSheet(f"background:{SURFACE}; border:none;")
-        bl = QHBoxLayout(bottom)
-        bl.setContentsMargins(12, 4, 12, 4)
+        bottom.setFixedHeight(78)
+        bottom.setObjectName("ocrBottomBar")
+        bottom.setStyleSheet(f"#ocrBottomBar {{ background:{SURFACE}; border:none; }}")
+        bl = QVBoxLayout(bottom)
+        bl.setContentsMargins(12, 6, 12, 8)
         bl.setSpacing(6)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(6)
 
         self._ocr_summary = QLabel("0 páginas")
         self._ocr_summary.setStyleSheet(f"color:{TEXT_DIM}; font-size:8pt; border:none;")
@@ -707,7 +795,9 @@ class DigitizationPage(QWidget):
         # Selector de área OCR: al activarlo, el usuario dibuja un rectángulo
         # sobre la vista previa; ese área (normalizada) se aplica a TODAS las
         # páginas para acotar dónde busca el serial el OCR.
-        self._btn_ocr_area = QPushButton("Área OCR")
+        # Etiquetas cortas: la pestaña ya dice OCR, así que repetirlo en cada
+        # botón solo gastaba ancho. El tooltip mantiene la explicación completa.
+        self._btn_ocr_area = QPushButton("Área")
         self._btn_ocr_area.setFixedHeight(32)
         self._btn_ocr_area.setCheckable(True)
         self._btn_ocr_area.setToolTip(
@@ -715,12 +805,13 @@ class DigitizationPage(QWidget):
             "(se aplica a todas las páginas)")
         self._btn_ocr_area.toggled.connect(self._toggle_ocr_area)
 
-        btn_ocr_page = QPushButton("OCR página")
+        btn_ocr_page = QPushButton("Página")
         btn_ocr_page.setFixedHeight(32)
+        btn_ocr_page.setToolTip("Ejecuta OCR solo en la página seleccionada")
         btn_ocr_page.clicked.connect(self._ocr_selected)
 
         # OCR de todas las páginas — se procesan en paralelo según "Hilos".
-        self._btn_ocr_all = QPushButton("OCR todo")
+        self._btn_ocr_all = QPushButton("Todo")
         self._btn_ocr_all.setProperty("primary", True)
         self._btn_ocr_all.setFixedHeight(32)
         self._btn_ocr_all.setToolTip(
@@ -735,14 +826,21 @@ class DigitizationPage(QWidget):
         cores_lbl = QLabel("Hilos:")
         cores_lbl.setStyleSheet(f"font-size:8pt; border:none; color:{TEXT_DIM};")
 
-        bl.addWidget(self._ocr_summary)
-        bl.addWidget(self._ocr_prog)
-        bl.addStretch()
-        bl.addWidget(self._btn_ocr_area)
-        bl.addWidget(btn_ocr_page)
-        bl.addWidget(self._btn_ocr_all)
-        bl.addWidget(cores_lbl)
-        bl.addWidget(self._ocr_cores_spin)
+        # Estado y ajuste arriba; las tres acciones solas abajo, para que la
+        # fila de botones quepa entera aun con el panel en su ancho mínimo.
+        status_row.addWidget(self._ocr_summary)
+        status_row.addWidget(self._ocr_prog)
+        status_row.addStretch()
+        status_row.addWidget(cores_lbl)
+        status_row.addWidget(self._ocr_cores_spin)
+
+        actions_row.addWidget(self._btn_ocr_area)
+        actions_row.addWidget(btn_ocr_page)
+        actions_row.addWidget(self._btn_ocr_all)
+        actions_row.addStretch()
+
+        bl.addLayout(status_row)
+        bl.addLayout(actions_row)
         v.addWidget(bottom)
 
         return w
@@ -815,35 +913,57 @@ class DigitizationPage(QWidget):
         self._btn_exp_civil = QPushButton("ZIP — un PDF por página (serial)")
         self._btn_exp_civil.setProperty("primary", True)
         self._btn_exp_civil.setFixedHeight(32)
+        self._btn_exp_civil.setProperty("align", "left")
         self._btn_exp_civil.clicked.connect(self._do_export_civil)
         al.addWidget(self._btn_exp_civil)
 
         self._btn_exp_civil_bm = QPushButton("ZIP — un PDF por página (marcador)")
         self._btn_exp_civil_bm.setFixedHeight(32)
+        self._btn_exp_civil_bm.setProperty("align", "left")
         self._btn_exp_civil_bm.clicked.connect(self._do_export_civil_bookmark)
         al.addWidget(self._btn_exp_civil_bm)
 
+        # ── Antecedentes ──
+        # Estas cuatro acciones vivían dentro de la isla "Registros Civiles",
+        # formando un muro de seis botones idénticos bajo un rótulo que no las
+        # describía. Separadas por destino, cada isla tiene 2 opciones y una
+        # sola acción primaria en la pestaña.
+        ant_grp = QGroupBox("Antecedentes")
+        antl = QVBoxLayout(ant_grp)
+        antl.setSpacing(8)
+
         self._btn_exp_ant_single = QPushButton("PDF único con marcadores")
         self._btn_exp_ant_single.setFixedHeight(32)
+        self._btn_exp_ant_single.setProperty("align", "left")
         self._btn_exp_ant_single.clicked.connect(self._do_export_ant_single)
-        al.addWidget(self._btn_exp_ant_single)
+        antl.addWidget(self._btn_exp_ant_single)
 
         self._btn_exp_ant_split = QPushButton("Varios PDFs por marcador")
         self._btn_exp_ant_split.setFixedHeight(32)
+        self._btn_exp_ant_split.setProperty("align", "left")
         self._btn_exp_ant_split.clicked.connect(self._do_export_ant_split)
-        al.addWidget(self._btn_exp_ant_split)
+        antl.addWidget(self._btn_exp_ant_split)
+
+        # ── Otros ──
+        otros_grp = QGroupBox("Otros")
+        ol = QVBoxLayout(otros_grp)
+        ol.setSpacing(8)
 
         self._btn_exp_ant_orig = QPushButton("Exportar PDF original")
         self._btn_exp_ant_orig.setFixedHeight(32)
+        self._btn_exp_ant_orig.setProperty("align", "left")
         self._btn_exp_ant_orig.clicked.connect(self._do_export_original)
-        al.addWidget(self._btn_exp_ant_orig)
+        ol.addWidget(self._btn_exp_ant_orig)
 
         self._btn_exp_merge = QPushButton("Unir PDFs externos…")
         self._btn_exp_merge.setFixedHeight(32)
+        self._btn_exp_merge.setProperty("align", "left")
         self._btn_exp_merge.clicked.connect(self._switch_merge_tab)
-        al.addWidget(self._btn_exp_merge)
+        ol.addWidget(self._btn_exp_merge)
 
         v.addWidget(civil_grp)
+        v.addWidget(ant_grp)
+        v.addWidget(otros_grp)
         v.addStretch()
 
         scroll.setWidget(c)
